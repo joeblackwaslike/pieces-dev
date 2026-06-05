@@ -7,6 +7,7 @@ import { registerClipboardHandler } from './handlers/clipboard-handler.js';
 import { registerGitHandler } from './handlers/git-handler.js';
 import { registerTerminalHandler } from './handlers/terminal-handler.js';
 import { registerDebugHandler } from './handlers/debug-handler.js';
+import { registerClaudeCodeHandler } from './handlers/claude-code-handler.js';
 
 let client: PiecesClient | undefined;
 let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
@@ -134,6 +135,12 @@ export async function activate(
     context.subscriptions.push(
       ...registerDebugHandler(client, queue, connected, log),
     );
+
+    if (config.get<boolean>('enableClaudeCodeIntegration', true)) {
+      context.subscriptions.push(
+        ...registerClaudeCodeHandler(client, queue, connected, log),
+      );
+    }
   }
 }
 

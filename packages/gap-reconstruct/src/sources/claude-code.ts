@@ -85,7 +85,7 @@ export class ClaudeCodeSource implements Source {
 
       lastTimestamp = ts;
 
-      if (!sessionStartEmitted && parsed.type === 'human') {
+      if (!sessionStartEmitted && (parsed.type === 'human' || parsed.type === 'user')) {
         sessionStartEmitted = true;
         yield {
           timestamp: ts,

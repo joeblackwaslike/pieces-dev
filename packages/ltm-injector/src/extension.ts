@@ -4,6 +4,9 @@ import { EventQueue } from './event-queue.js';
 import { registerFileHandler } from './handlers/file-handler.js';
 import { registerTabHandler } from './handlers/tab-handler.js';
 import { registerClipboardHandler } from './handlers/clipboard-handler.js';
+import { registerGitHandler } from './handlers/git-handler.js';
+import { registerTerminalHandler } from './handlers/terminal-handler.js';
+import { registerDebugHandler } from './handlers/debug-handler.js';
 
 let client: PiecesClient | undefined;
 let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
@@ -114,6 +117,22 @@ export async function activate(
       ...registerFileHandler(client, queue, connected, log),
       ...registerTabHandler(client, queue, connected, log, checkInMs),
       ...registerClipboardHandler(client, queue, connected, log),
+    );
+
+    if (config.get<boolean>('enableGitEvents', true)) {
+      context.subscriptions.push(
+        ...registerGitHandler(client, queue, connected, log),
+      );
+    }
+
+    if (config.get<boolean>('enableTerminalEvents', true)) {
+      context.subscriptions.push(
+        ...registerTerminalHandler(client, queue, connected, log),
+      );
+    }
+
+    context.subscriptions.push(
+      ...registerDebugHandler(client, queue, connected, log),
     );
   }
 }

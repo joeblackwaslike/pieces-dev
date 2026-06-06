@@ -1,10 +1,14 @@
 {
-  "name": "@pieces-dev/ltm-injector",
+  "name": "pieces-ltm-injector",
   "displayName": "Pieces LTM Injector",
   "description": "Injects IDE workstream events into PiecesOS Long-Term Memory",
   "version": "0.1.0",
   "publisher": "joeblack",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeblackwaslike/pieces-dev"
+  },
   "engines": {
     "vscode": "^1.100.0"
   },

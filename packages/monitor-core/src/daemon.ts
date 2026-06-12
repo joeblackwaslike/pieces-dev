@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { extensions } from './extensions.js';
+import { Host } from './host.js';
 import { buildServices } from './runtime.js';
 import { buildServer } from './server.js';
 
@@ -39,7 +41,23 @@ export async function startDaemon(): Promise<void> {
 		summary: 'Pieces Monitor daemon started',
 	});
 
+	// Load extensions before building the server: `buildServer` mounts
+	// `services.api.routes` once, so any routes an extension registers during
+	// `activate` must already be present.
+	const host = new Host(services);
+	for (const extension of extensions) {
+		await host.load(extension);
+	}
+
 	const app = buildServer(services, { token: ensureToken() });
+
+	const shutdown = async (): Promise<void> => {
+		await host.unloadAll();
+		await app.close();
+		process.exit(0);
+	};
+	process.once('SIGINT', shutdown);
+	process.once('SIGTERM', shutdown);
 	try {
 		await app.listen({ host: '127.0.0.1', port: PORT });
 		console.log(`Pieces Monitor daemon listening on http://127.0.0.1:${PORT}`);

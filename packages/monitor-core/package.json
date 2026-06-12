@@ -18,6 +18,7 @@
   "dependencies": {
     "@fastify/websocket": "^11.0.0",
     "@pieces-dev/core": "workspace:*",
+    "@pieces-dev/data-integrity": "workspace:*",
     "@pieces-dev/monitor-sdk": "workspace:*",
     "@pieces-dev/watchdog": "workspace:*",
     "fastify": "^5.2.0"

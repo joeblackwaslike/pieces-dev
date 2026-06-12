@@ -126,6 +126,9 @@ export interface CommandApi {
 
 export type RestartMode = 'soft' | 'term' | 'kill';
 
+/** Signal to send when forcibly stopping Pieces OS: `term` = SIGTERM, `kill` = SIGKILL. */
+export type KillSignal = 'term' | 'kill';
+
 /**
  * 11. Process control — hardened, single-launcher Pieces lifecycle. All launch
  * goes through `open -a` (respects `LSMultipleInstancesProhibited`) with a
@@ -137,6 +140,14 @@ export interface ProcessApi {
 	isPiecesRunning(): boolean;
 	launchPieces(): Promise<void>;
 	stopPieces(): Promise<void>;
+	/**
+	 * Signal every running Pieces OS pid and resolve once they have exited
+	 * (bounded by `waitMs`). Returns the pids still alive at the deadline — an
+	 * empty array means a clean exit. `term` = SIGTERM, `kill` = SIGKILL.
+	 */
+	killPieces(signal: KillSignal, waitMs?: number): Promise<number[]>;
+	/** Open the Pieces **Desktop** app (the re-login UI) via `open -a "Pieces"`. */
+	openApp(): Promise<void>;
 	restartPieces(mode?: RestartMode): Promise<void>;
 }
 

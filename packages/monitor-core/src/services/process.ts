@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import type { ProcessApi, RestartMode } from '@pieces-dev/monitor-sdk';
+import type { KillSignal, ProcessApi, RestartMode } from '@pieces-dev/monitor-sdk';
 
 const PIECES_APP = 'Pieces OS';
+const PIECES_DESKTOP_APP = 'Pieces';
+/** How often `killPieces` re-checks whether the signalled pids have exited. */
+const KILL_POLL_MS = 500;
 
 export interface RunResult {
 	stdout: string;
@@ -9,6 +12,8 @@ export interface RunResult {
 }
 
 export type CommandRunner = (cmd: string, args: string[]) => RunResult;
+export type Sleep = (ms: number) => Promise<void>;
+export type Clock = () => number;
 
 /**
  * Process control: the hardened, single-launcher Pieces lifecycle. Every launch
@@ -17,7 +22,11 @@ export type CommandRunner = (cmd: string, args: string[]) => RunResult;
  * bug. The command runner is injectable for testing.
  */
 export class ProcessControl {
-	constructor(private readonly run: CommandRunner = defaultRunner) {}
+	constructor(
+		private readonly run: CommandRunner = defaultRunner,
+		private readonly sleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+		private readonly now: Clock = () => Date.now(),
+	) {}
 
 	listPids(matcher: string): number[] {
 		const { stdout, code } = this.run('pgrep', ['-f', matcher]);
@@ -45,9 +54,33 @@ export class ProcessControl {
 		}
 	}
 
+	/**
+	 * Signal every Pieces OS pid (`-TERM` or `-KILL`) and poll until they exit or
+	 * `waitMs` elapses. Returns the still-alive pids — empty means a clean exit.
+	 * Waiting for exit before any relaunch is what keeps the guarded `launchPieces`
+	 * from racing a still-dying process.
+	 */
+	async killPieces(signal: KillSignal, waitMs = 10_000): Promise<number[]> {
+		const flag = signal === 'kill' ? '-KILL' : '-TERM';
+		for (const pid of this.listPids(PIECES_APP)) {
+			this.run('kill', [flag, String(pid)]);
+		}
+		const start = this.now();
+		while (true) {
+			const remaining = this.listPids(PIECES_APP);
+			if (remaining.length === 0) return [];
+			if (this.now() - start >= waitMs) return remaining;
+			await this.sleep(KILL_POLL_MS);
+		}
+	}
+
+	/** Open the Pieces Desktop app (its re-login UI), distinct from the headless OS service. */
+	async openApp(): Promise<void> {
+		this.run('open', ['-a', PIECES_DESKTOP_APP]);
+	}
+
 	async restartPieces(mode: RestartMode = 'term'): Promise<void> {
-		void mode; // escalation modes land with the watchdog extension.
-		await this.stopPieces();
+		await this.killPieces(mode === 'kill' ? 'kill' : 'term');
 		await this.launchPieces();
 	}
 
@@ -57,6 +90,8 @@ export class ProcessControl {
 			isPiecesRunning: () => this.isPiecesRunning(),
 			launchPieces: () => this.launchPieces(),
 			stopPieces: () => this.stopPieces(),
+			killPieces: (signal, waitMs) => this.killPieces(signal, waitMs),
+			openApp: () => this.openApp(),
 			restartPieces: (mode) => this.restartPieces(mode),
 		};
 	}

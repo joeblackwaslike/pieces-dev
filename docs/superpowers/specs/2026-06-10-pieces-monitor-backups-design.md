@@ -76,8 +76,14 @@ Out of scope: restore/rollback (owned by `doctor`), corruption detection (owned 
 The engine is ported verbatim in behavior from `export.ts`; only its inputs (port, paths,
 retention knobs) and its plumbing (logging, scheduling, persistence) change.
 
-**Strategy selection.** On each run, `checkHealth()` pings Pieces OS at the **discovered**
-base URL (`/.well-known/health`, 5s timeout).
+**Strategy selection — one per run, with automatic fallback.** On each run, `checkHealth()`
+pings Pieces OS at the **discovered** base URL (`/.well-known/health`, 5s timeout). Exactly one
+strategy runs per backup: **`api`** when Pieces is alive, **`sqlite`** when it is down. If the
+`api` export fails — either the export request itself errors or the artifact fails verification
+(below) — `runBackup` **automatically falls back to the `sqlite` strategy in the same run**, so
+every run ends with one verified backup and there is never a zero-backup day. A
+`beltAndSuspenders` setting (default **off**) makes a run take *both* strategies for users who
+want it; the default avoids doubling IO every run for a benefit that rarely matters.
 
 - Pieces alive → **`api`** strategy: `apiExport()` does `GET /database/export` (180s timeout),
   streams `res.body` through `createGzip({ level: 6 })` into
@@ -94,7 +100,32 @@ base URL (`/.well-known/health`, 5s timeout).
   - Per-file byte sizes are recorded as counts.
 
 The `strategy` field is chosen by configuration when set to a fixed `api`/`sqlite`; the
-default `auto` preserves the existing alive-vs-down selection.
+default `auto` preserves the existing alive-vs-down selection (with the same `api → sqlite`
+fallback on failure).
+
+**Verify before success.** No snapshot is recorded as successful until its artifact is
+verified. SQLite files produced by VACUUM INTO and the Couchbase direct copy are checked with
+`PRAGMA integrity_check`; the API export is verified by a gzip-decompress plus a JSON
+well-formedness sanity read. Verification reuses `data-integrity`'s integrity-check **primitive**
+(a shared helper), but the backups extension **owns the policy** of validating its own
+artifacts — artifact validity is a different concern from `data-integrity`'s live-DB monitoring.
+On verification failure the run records a `backup-failed` incident and notifies, and the bad
+artifact is **never allowed to occupy a retention slot** — so a corrupt snapshot can never evict
+a last-known-good one (the retention-cliff guard). A failed `api` verification triggers the
+`sqlite` fallback described above.
+
+**Compression / dedupe (v1).** gzip **level 6**, a full per-day copy, **no dedupe**. Retention
+is bounded (last 3 + ≤ 12 months) so the footprint stays modest, and content-addressed/chunked
+dedupe would add its own integrity-tracking complexity for marginal gain. If disk usage ever
+becomes a real constraint, the cheap next step is to **hardlink unchanged files across dated
+dirs** — noted as a deferred optimization, not built in v1.
+
+**Per-DB defer + all-or-nothing API wrinkle.** The corruption defer flag is **per-DB** — the
+`data-integrity.suspect` payload carries the DB id, so only the flagged DB is skipped while
+healthy DBs keep backing up. The per-file `sqlite` path is where this per-DB skipping actually
+works. The API export (`GET /database/export`) is **all-or-nothing**, so while *any* critical DB
+is suspect, the run **skips the `api` strategy for that run** and falls back to per-file SQLite
+copies of the **non-suspect** DBs.
 
 **Output layout** (unchanged, one dated dir per day under the backup root):
 
@@ -143,6 +174,10 @@ that orchestrates them.
   - `backupRoot`, `vectorDbDir`, `couchbaseDir` paths (defaulting to the current
     `~/Library/com.pieces.pfd/backups` and `~/Library/com.pieces.os/production/Pieces/…`).
   - `strategy` (`auto` default | `api` | `sqlite`).
+  - `beltAndSuspenders` (boolean, default `false`) — when on, a run takes **both** the `api`
+    and `sqlite` strategies instead of one-with-fallback.
+  - `deferTtlHours` (number) — safety-net TTL after which a corruption defer flag is
+    re-evaluated and cleared with a logged warning if no `data-integrity.recovered` arrives.
   - `onChange` re-arms the scheduler when `frequency` changes.
 - **`ctx.dashboard`** — a widget showing **last backup time, size, strategy** (read from
   `ctx.store`) and **next scheduled run**; a "Back up now" button bound to the command;
@@ -161,10 +196,14 @@ that orchestrates them.
   - `pmon backup prune` → run retention prune now.
 - **`ctx.commands`** — register `backups.run` (and `backups.prune`) so the widget button, CLI,
   menu, and API all dispatch the same verb (commands = verbs; routes = nouns).
-- **`ctx.bus`** — `ctx.bus.on('data-integrity.suspect', …)` sets a "defer" flag; while set,
-  `runBackup` records a `backup-deferred` incident and returns **without** snapshotting, so a
-  corrupt DB never overwrites a good one and prune never erodes good history. Cleared on a
-  recovery/all-clear signal (see Open questions).
+- **`ctx.bus`** — `ctx.bus.on('data-integrity.suspect', …)` sets a **per-DB** defer flag keyed
+  on the DB id carried in the payload; only the flagged DB is skipped while healthy DBs keep
+  backing up. When a DB is deferred, `runBackup` records a `backup-deferred` incident for that DB
+  so a corrupt copy never overwrites a good one and prune never erodes good history. The flag is
+  cleared on the `data-integrity.recovered` bus event (the health authority's all-clear), with a
+  TTL safety-net that re-evaluates and clears after N hours if no `recovered` arrives (a dropped
+  event can never suspend backups forever). See **Resolved decisions** for the full coordination
+  rules.
 
 ## Source to port / reuse
 
@@ -182,21 +221,37 @@ that orchestrates them.
 - **Core services** (`monitor-core`) — scheduler, config, store, health, incidents, log,
   notify, commands, cli, bus, as wired through `ctx`.
 
-## Open questions
+## Resolved decisions
 
-- **Skip-during-corruption coordination.** What exactly clears the defer flag — an explicit
-  `data-integrity.recovered` bus event from `data-integrity`, a successful `doctor` restore, or a
-  TTL? And should a deferral block *all* DBs or only the specific DB flagged as corrupt
-  (per-DB granularity would let healthy DBs keep backing up)?
-- **Verify snapshot integrity.** Should each VACUUM INTO / direct-copy run
-  `PRAGMA integrity_check` (and a gzip-decompress sanity read for the API export) before the
-  manifest is written, so we never record a "successful" backup that is itself corrupt? This
-  overlaps `data-integrity`'s remit — decide ownership.
-- **Gzip level / dedupe.** Level 6 is the current default; is daily cadence worth a higher
-  level or content-addressed/hardlink dedupe across dated dirs to cut disk usage, given most
-  days' DBs barely change? Or is the simple per-day full copy fine within the retention bound?
-- **Strategy when both available.** When Pieces is alive, should `auto` ever *also* take the
-  SQLite snapshot (belt-and-suspenders), or strictly one strategy per run as today?
+- **Defer-flag clearing + granularity.** The corruption defer flag clears on the
+  `data-integrity.recovered` bus event — `data-integrity` is the health authority, **not** a
+  `doctor` restore (a restore will itself make `data-integrity` re-evaluate and emit `recovered`).
+  A **TTL safety-net** re-evaluates and clears the flag (with a logged warning) if no `recovered`
+  arrives within N hours, so a dropped event can never suspend backups forever. Defer is
+  **per-DB** (the `data-integrity.suspect` payload carries the DB id) — only the flagged DB is
+  skipped while healthy DBs keep backing up. _Wrinkle:_ because `GET /database/export` is
+  all-or-nothing, while any critical DB is suspect the run skips the `api` strategy and falls
+  back to per-file SQLite copies of the non-suspect DBs (the per-file path is where per-DB
+  skipping works). _Rationale:_ a single health authority avoids two systems disagreeing about
+  recovery, and the TTL closes the dropped-event failure mode.
+- **Verify before success.** Every snapshot is verified before being recorded successful —
+  `PRAGMA integrity_check` on the VACUUM INTO / direct-copy SQLite files, and a gzip-decompress
+  plus JSON well-formedness sanity read on the API export. The check reuses `data-integrity`'s
+  integrity-check **primitive** (shared helper), but backups **owns the policy** of validating
+  its own artifacts (artifact validity ≠ live-DB monitoring). On failure: record a
+  `backup-failed` incident, notify, and never let the bad artifact occupy a retention slot.
+  _Rationale:_ a snapshot you never verified is not a backup, and the retention-cliff guard means
+  a corrupt artifact can never evict a last-known-good one.
+- **Compression / dedupe.** v1 is gzip **level 6**, full per-day copy, **no dedupe**. _Rationale:_
+  retention is bounded (last 3 + ≤ 12 months) so footprint is modest, and content-addressed /
+  chunked dedupe adds its own integrity-tracking complexity for marginal gain; if disk ever
+  matters, hardlink unchanged files across dated dirs (deferred note only).
+- **Strategy when both available.** **One** strategy per run — `api` when Pieces is alive,
+  `sqlite` when it is down — with **automatic fallback** to `sqlite` in the same run if the API
+  export fails or fails verification (so a run always ends with one verified backup; never a
+  zero-backup day). A `beltAndSuspenders` setting (default **off**) lets users take both every
+  run. _Rationale:_ doubling every run wastes IO for a rare benefit; primary-with-fallback gives
+  the resilience that actually matters.
 
 ## Verification
 

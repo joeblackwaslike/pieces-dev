@@ -18,7 +18,8 @@ signal — the 129 MB → 2.9 MB size collapse went unnoticed — and no single 
 
 **Goal:** a thin, extensible monitoring platform. A headless **Node/TS daemon** (extension
 host + core services + a local HTTP/WS API) with three interchangeable frontends: a native
-**Swift menu bar app**, a **browser dashboard**, and a **`pmon` CLI**. The existing tools
+**Swift menu bar app**, a **dashboard web app in a native window (WKWebView)**, and a
+**`pmon` CLI**. The existing tools
 become **extensions**. This spec covers the platform core only, proven end-to-end by a
 trivial built-in health check and command.
 
@@ -29,7 +30,17 @@ trivial built-in health check and command.
 - **IPC:** HTTP + WebSocket bound to **`127.0.0.1:4747`**. All three frontends are views over
   this one API.
 - **Dashboard:** SSR shell (Fastify renders HTML) + **React islands** opt-in for rich pages.
-  Extensions contribute HTML fragments/routes as pure backend TS by default.
+  Extensions contribute HTML fragments/routes as pure backend TS by default. The dashboard is
+  **not** shown in a browser by default — it is the **dashboard web app rendered in a native
+  macOS window (an `NSWindow` hosting a `WKWebView`)** provided by the menu-bar app, loading
+  the daemon's loopback dashboard URL. This is the "native shell + system WebView" pattern
+  (what Tauri does) realized in Swift/AppKit — no Electron/Chromium bundle. Because the
+  `WKWebView` is same-origin to the daemon (`127.0.0.1:4747`), the app injects the bearer token
+  into the web view so the embedded UI is auto-authenticated (no token/login prompt). Power
+  users can still open the loopback URL in a real browser.
+- **Settings:** a **native SwiftUI window** generated from the extensions' settings schemas
+  fetched from the daemon (not web). The web dashboard and `pmon` CLI render the **same**
+  schema.
 - **Menu bar:** native **Swift** (`LSUIElement`, Developer ID notarization). Its own spec;
   not in this cycle.
 - **Persistence:** a core **SQLite-shim service**; everything persists through it, **bounded
@@ -45,8 +56,9 @@ trivial built-in health check and command.
 ```text
             ┌───────────────── 127.0.0.1:4747 (HTTP + WS) ─────────────────┐
             │                                                              │
-  Swift menu bar app          Browser dashboard                pmon CLI
-  (renders JSON menu model)   (SSR shell + React islands)      (commander)
+  Swift menu bar app          Dashboard web app                pmon CLI
+  (renders JSON menu model)   in a native window (WKWebView)   (commander)
+                              (SSR shell + React islands)
             └──────────────────────────┬───────────────────────────────────┘
                                         │
                           ┌─────────────▼──────────────┐
@@ -88,12 +100,22 @@ trivial built-in health check and command.
 7. **Scheduler** — one shared interval/cron engine so extensions don't each spin loops.
 8. **Notification service** — single point that **dedups + rate-limits** and posts macOS
    notifications with action buttons that deep-link to a dashboard page. Extensions *request*;
-   core decides whether/how to fire.
+   core decides whether/how to fire. **Presenter election via capability registration:** the
+   menu-bar app registers as an OS-notification presenter on connect (with its permission
+   status); while a permitted presenter is connected, core routes each notification to it and
+   **suppresses its own `osascript` fallback**. If no permitted presenter is connected (or
+   permission was denied), core fires `osascript` itself. The browser/in-window dashboard shows
+   in-page toasts only — it is **not** an OS-notification presenter, so it never double-fires.
 
 ### Surfaces & control
 
 9. **API service** — extensions register namespaced HTTP/WS endpoints (`/api/ext/<id>/…`) for
    React-island data feeds, streaming, and third-party scripting; token/CSRF applied centrally.
+   **React-island delivery:** an extension ships a self-contained ESM bundle (its deps — e.g.
+   uPlot — bundled in) served by the daemon at `/islands/<id>.js`; the SSR shell mounts it via a
+   `<div data-island="<id>" data-props='…'>` element plus a `<script type="module">`, and renders
+   a meaningful server-side fallback inside the mount node, so first paint is instant and the page
+   degrades without JS. `metrics` is the reference island.
 10. **Command registry** — one named command `{id, title, params, handler}` invokable
     identically from menu bar, dashboard button, CLI subcommand, and API. The primitive that
     guarantees the "everything is scriptable" symmetry. **Commands = verbs; API routes = nouns.**
@@ -158,9 +180,38 @@ export interface HostContext {
 
 An extension is **pure backend TS** unless it opts into a React island.
 
+### Settings schema (drives native + web + CLI rendering)
+
+Settings render as a **native SwiftUI window**, as a web pane in the dashboard, and as `pmon`
+prompts — all from the **same** `SettingsSchema`. So the schema must be expressive enough to
+drive native control generation. Each section groups typed fields; each field carries:
+
+- `label` and `help` (human text)
+- `type` — drives the native control: `bool`→Toggle, `number`→Stepper/Slider, `string`→TextField,
+  `enum`→Picker, `path`→path picker
+- constraints — `min` / `max` / `step` (for `number`)
+- `enum` options (for `enum`)
+- `default`
+- section grouping
+
+A section may set a **`web` escape hatch**: instead of native controls it opts to render as a
+custom pane in the `WKWebView`. None of the six planned extensions need it, but the hook exists.
+
+### Command type flags
+
+The `Command` type carries two flags that drive cross-surface behavior:
+
+- `expectedDurationMs?` (or an `async?` boolean) — drives menu-bar feedback: fast commands show
+  inline state, long-running commands emit started/progress/completion notifications.
+- `destructive?: boolean` — drives a uniform confirmation flow across surfaces: a typed-confirm
+  modal in the UI, a `--yes`/TTY prompt in the CLI, and a two-step confirm-token on the API
+  (beyond bearer/CSRF).
+
 ## Operational spine
 
-- **Daemon = launchd agent (`KeepAlive`)** — launchd supervises the supervisor.
+- **Daemon = launchd agent (`KeepAlive`)** — launchd supervises the supervisor. The menu-bar
+  app **never spawns the daemon directly**; it asks launchd via `launchctl kickstart`. launchd
+  (`KeepAlive`) is the daemon's sole supervisor, preserving the single-launcher invariant.
 - **Strict single-instance** — via process control: exclusive bind on `:4747` + lockfile
   fallback; a second launch exits cleanly. Non-negotiable given the DB-wipe history.
 - **Security** — bind `127.0.0.1` only. Read-only GETs are open on loopback; state-changing
@@ -169,6 +220,10 @@ An extension is **pure backend TS** unless it opts into a React island.
 - **Pieces lifecycle policy** (used by `watchdog`) — enforced inside process control: launch
   via `open -a`, **never `Popen`**; pre-launch PID guard; duplicate killer. Keep
   `com.pieces.os.launch.plist` → `/dev/null`.
+- **Restore coordination owned by core** — core mediates the `doctor`↔`watchdog` restore
+  stand-down handshake and owns the **dead-man timer** that auto-re-enables the watchdog if
+  `doctor.restore-end` never arrives (e.g. doctor crashed mid-restore), since core is the only
+  neutral always-alive party. The full handshake lives in the `doctor` spec.
 
 ## Cycle 1 scope
 
@@ -195,6 +250,12 @@ interfaces (`StoreApi`, `ConfigApi`, `HealthApi`, `IncidentApi`, `LogApi`, `Even
 `Incident`, `HealthStatus`, `Command`, `SettingsSchema`. The contract every extension
 imports; keep it minimal and stable.
 
+`SettingsSchema` is expressive enough to **drive native control generation** (typed fields with
+`label` / `help` / `type` / constraints / `enum` options / `default` / section grouping, plus a
+per-section `web` escape hatch) — the same schema feeds the native SwiftUI settings window, the
+web dashboard, and the CLI. `Command` carries `expectedDurationMs?` (or `async?`) for menu-bar
+feedback and `destructive?: boolean` to trigger the uniform cross-surface confirmation flow.
+
 ### `monitor-core`
 
 - `daemon.ts` — bootstrap: single-instance lock (process control), load config, init
@@ -207,9 +268,12 @@ imports; keep it minimal and stable.
 - `services/log.ts` — structured logger over persistence + ring buffer; query API.
 - `services/event-bus.ts` — typed pub/sub; bridges to WS `/events`.
 - `services/scheduler.ts` — shared interval/cron engine.
-- `services/notify.ts` — dedup/rate-limit + `osascript` poster.
-- `services/api.ts` — namespaced route/WS registration atop Fastify; token/CSRF.
-- `services/commands.ts` — command registry + uniform dispatch (`/actions/:id`, CLI, menu).
+- `services/notify.ts` — dedup/rate-limit + presenter election (route to a registered, permitted
+  presenter; `osascript` fallback only when none is connected).
+- `services/api.ts` — namespaced route/WS registration atop Fastify; token/CSRF; serves
+  per-extension island ESM bundles at `/islands/<id>.js`.
+- `services/commands.ts` — command registry + uniform dispatch (`/actions/:id`, CLI, menu);
+  honors `expectedDurationMs`/`async` feedback and `destructive` confirmation.
 - `services/process.ts` — single-instance lock, PID discovery, safe launch/kill policy.
 - `host.ts` — builds `HostContext`, calls `activate(ctx)`/`deactivate()`, namespaces
   contributions per extension.
@@ -249,6 +313,34 @@ Cycle 1.
   without a token is rejected; with the token it succeeds.
 - Open `http://127.0.0.1:4747/` — the SSR shell renders the status banner + (empty) widget
   grid + incident timeline + log viewer.
+
+## Resolved design decisions (review)
+
+1. **Native window delivery** — the dashboard/feature UI runs inside a native macOS window
+   (`NSWindow` hosting a `WKWebView`) provided by the menu-bar app, loading the daemon's loopback
+   dashboard URL; same-origin token injection auto-authenticates the embedded UI. No
+   Electron/Chromium bundle; power users can still open the URL in a real browser.
+2. **Native settings** — settings render as a native SwiftUI window generated from the
+   extensions' settings schemas; the web dashboard and `pmon` render the same schema, so
+   `SettingsSchema` is expressive enough to drive native control generation, with a per-section
+   `web` escape hatch.
+3. **Command type flags** — `Command` gains `expectedDurationMs?`/`async?` (menu-bar feedback)
+   and `destructive?: boolean` (uniform confirmation: typed-confirm modal, CLI `--yes`/TTY
+   prompt, two-step API confirm-token).
+4. **API service — island contract** — extensions ship self-contained ESM island bundles served
+   at `/islands/<id>.js`; the SSR shell mounts them via `data-island`/`data-props` + a module
+   script and renders a server-side fallback, so first paint is instant and the page degrades
+   without JS. `metrics` is the reference island.
+5. **Notify presenter election** — core elects a single OS-notification presenter via capability
+   registration; while a permitted presenter is connected it routes there and suppresses its own
+   `osascript` fallback, otherwise core fires `osascript`. The dashboard shows in-page toasts
+   only and never double-fires.
+6. **Daemon lifecycle** — the menu-bar app never spawns the daemon; it uses `launchctl kickstart`,
+   keeping launchd (`KeepAlive`) the daemon's sole supervisor and preserving the single-launcher
+   invariant.
+7. **Restore coordination owned by core** — core mediates the `doctor`↔`watchdog` restore
+   stand-down handshake and owns the dead-man timer that auto-re-enables the watchdog if
+   `doctor.restore-end` never arrives, since core is the only neutral always-alive party.
 
 ## Downstream specs
 

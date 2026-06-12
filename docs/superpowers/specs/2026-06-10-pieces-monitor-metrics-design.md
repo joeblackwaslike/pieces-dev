@@ -18,11 +18,12 @@ Centralizing it inside the daemon matters for three reasons:
   forever. Folding it into the core persistence shim means the metrics table is
   subject to the same bounded-rollup discipline that this whole project exists to
   enforce (the unbounded-then-purge mistake is what wiped the CouchBase Lite DB).
-- **Shared signals, not siloed logs.** `restart_count` no longer comes from
-  scraping a log file the babysitter happens to write; it comes from querying the
-  core **incident store**, where the `watchdog` extension records restart
-  incidents as structured data. The metrics sampler and the watchdog stop
-  guessing about each other through a flat file.
+- **Shared signals, not siloed logs.** Restart counts no longer come from
+  scraping a log file the babysitter happens to write, and are no longer stored
+  on the sample row. They are derived on demand by querying the core **incident
+  store**, where the `watchdog` extension records restart incidents as structured
+  data. The metrics sampler and the watchdog stop guessing about each other
+  through a flat file.
 - **A real surface.** Samples become a dashboard page (trend charts), a dashboard
   widget (current CPU/mem sparkline), a health check (CPU/mem over threshold →
   warn), a JSON data feed, and a `pmon metrics` CLI command — instead of raw
@@ -50,10 +51,11 @@ Centralizing it inside the daemon matters for three reasons:
 ## Purpose & scope
 
 Sample the Pieces OS process every 30s — CPU%, RSS/VSZ, thread count, open file
-descriptors, cumulative user/system CPU seconds, process age, `/health` status,
-and restart count — persist each sample through the core store with bounded
-rollup, and surface the trend as charts, a widget, a health check, an API feed,
-and a CLI command.
+descriptors, cumulative user/system CPU seconds, process age, and `/health`
+status — persist each sample through the core store with bounded rollup, and
+surface the trend as charts, a widget, a health check, an API feed, and a CLI
+command. Restarts are not sampled; they are derived on demand from the incident
+store over the displayed window (see below).
 
 **In scope:** the ported sampler, the table + rollup, the five contributions
 above, and settings.
@@ -91,15 +93,12 @@ A single handler registered via `ctx.schedule` at the configured interval
    `ctx.pieces.discoverPort()` rather than hardcoding `39300`
    (`http://127.0.0.1:<port>/.well-known/health`), GET with timeout, return the
    HTTP status, `-1` on any failure.
-6. **`getRestartCount()`** — **replaces** `parse_restart_count`. Instead of
-   regex-scanning `babysitter.stdout.log` for `=== Restart attempt n/m ===`, it
-   queries `ctx.incidents` for restart incidents recorded by the `watchdog`
-   extension (e.g. `count of kind === "restart"`, optionally within the
-   retention window). See "where restart_count now comes from."
-7. **`collectSample(pid)`** — port of `collect_sample`. Assemble one row;
+6. **`collectSample(pid)`** — port of `collect_sample`. Assemble one row;
    `timestamp` = ISO-8601 UTC to seconds. If `pid` is `null`, write a row with
-   all process fields `null` but real `health_status` and `restart_count` (the
-   "process not running" null sample is intentional — gaps are signal).
+   all process fields `null` but a real `health_status` (the "process not
+   running" null sample is intentional — gaps are signal). No restart field is
+   written; restarts are derived from the incident store at query time, not at
+   sample time. (`parse_restart_count` is dropped entirely.)
 
 Helper ports, exact semantics preserved:
 
@@ -135,8 +134,7 @@ CREATE TABLE ext_metrics_samples (
   cpu_user_secs     REAL,
   cpu_sys_secs      REAL,
   process_age_secs  REAL,
-  health_status     INTEGER,           -- HTTP code, or -1
-  restart_count     INTEGER            -- from incident store, not log scrape
+  health_status     INTEGER            -- HTTP code, or -1
 );
 -- index on ts for range queries (port of idx_ts)
 ```
@@ -144,18 +142,30 @@ CREATE TABLE ext_metrics_samples (
 Migration is registered through the store's migration API; the index on `ts` is
 the port of the Python `idx_ts`.
 
+**No `restart_count` column.** Restarts are not stored on the sample row at all.
+They are derived on demand from `ctx.incidents` (watchdog-recorded restart
+incidents) over the displayed time window — "restarts in range" — so the ported
+`restart_count` column and the log-scraping that fed it are removed entirely.
+(This is distinct from the watchdog's internal escalation counter, which is
+transient and not a metric.)
+
 **Bounded rollup strategy.** This is the deliberate departure from the standalone
 sampler:
 
 - **Raw tier** — 30s rows kept for `rawRetentionDays` (default 7).
-- **Hourly tier** — a second table `ext_metrics_samples_hourly` (same columns +
-  `bucket TEXT`). A scheduled rollup job (hourly via `ctx.schedule`) collapses
-  raw rows older than the raw-retention boundary into one hourly row per bucket:
-  averages for gauges (`cpu_percent`, `mem_rss_mb`, `mem_vsz_mb`, `thread_count`,
-  `open_files`), `max` for peaks worth keeping (peak `cpu_percent`,
-  `mem_rss_mb`), `last`/`max` for monotonic counters (`cpu_user_secs`,
-  `cpu_sys_secs`, `process_age_secs`, `restart_count`), and worst-case for
-  `health_status`. Exact aggregate set is an open question below.
+- **Hourly tier** — a second table `ext_metrics_samples_hourly` (a `bucket TEXT`
+  plus the per-column aggregates below). A scheduled rollup job (hourly via
+  `ctx.schedule`) collapses raw rows older than the raw-retention boundary into
+  one hourly row per bucket:
+  - **Gauges** (`cpu_percent`, `mem_rss_mb`, `mem_vsz_mb`, `thread_count`,
+    `open_files`) keep **both `avg` and `max`** per bucket (e.g. `cpu_percent_avg`,
+    `cpu_percent_max`); `min` is dropped. `max` preserves the spike that precedes
+    a "killed for CPU" event, which `avg` would smooth away.
+  - **Health** (`health_status`) folds to `fail_count` (number of non-200 samples
+    in the bucket) + `sample_count`, which together yield an hourly health
+    percentage.
+  - **Cumulative counters** (`cpu_user_secs`, `cpu_sys_secs`, `process_age_secs`)
+    keep their `last` (end-of-bucket) value.
 - **Prune** — after rollup, raw rows past `rawRetentionDays` are deleted; hourly
   rows kept for `hourlyRetentionDays` (default 90), then pruned. Both bounds use
   core retention helpers, so the table can never grow unbounded.
@@ -172,14 +182,28 @@ sampler:
   (`metrics.resource`) to the rollup: `crit` if `cpu_percent` or `mem_rss_mb`
   exceeds the configured `crit` threshold, `warn` if over `warn`, else `ok`, with
   a detail string (`"cpu 91% > 85"`). This feeds the daemon's overall rollup
-  (menu bar color, dashboard banner, CLI exit code). Sustained-vs-instantaneous
-  smoothing (N consecutive samples) is a settable knob; default is instantaneous
-  to match the Python's per-sample CPU%.
+  (menu bar color, dashboard banner, CLI exit code). To avoid flapping, the check
+  applies **hysteresis** via `alarmSustainSamples` (default 3, ~90s at the 30s
+  cadence): it requires N consecutive over-threshold samples before flipping to
+  warn/crit, and the same N consecutive back-under-threshold samples before
+  clearing. Configurable — set `1` for the old per-sample behavior. The default
+  is >1 because this check now feeds the rollup (menu-bar color, notifications),
+  so flapping on a single spike is costly.
 - **`ctx.dashboard` page (React island)** — `/dashboard/metrics`, the project's
-  first React island. SSR shell renders the page chrome; the island mounts an
-  **uPlot** chart component that fetches `/api/ext/metrics/series` and draws CPU%,
-  RSS/VSZ, threads, fds over time, with a `since` range selector. uPlot chosen
-  for tiny bundle + fast canvas redraw on dense time series (see open questions).
+  first React island, and the **reference island implementation** the core
+  dashboard shell's island contract is modeled on. The island uses **uPlot**
+  (≈40 KB, canvas, built for dense time series), bundled into the island. It
+  fetches `/api/ext/metrics/series` and draws CPU%, RSS/VSZ, threads, fds over
+  time, with a `since` range selector; it also overlays "restarts in range"
+  markers from the incident store.
+  - **Build/ship.** The island is a self-contained ESM bundle (uPlot bundled in)
+    built with esbuild/Vite and served by the daemon at `/islands/metrics.js`.
+  - **Mount.** The SSR shell mounts it via a
+    `<div data-island="metrics-chart" data-props='…'>` node plus a
+    `<script type="module">` that loads `/islands/metrics.js`.
+  - **Fallback.** The server renders a meaningful static fallback (a table of
+    current/last values) inside the mount node, so first paint is instant and the
+    page degrades gracefully when JS is off.
 - **`ctx.dashboard` widget** — a small **CPU/mem sparkline** showing the latest
   sample + last ~30 min trend, rendered as a plain HTML/inline-SVG fragment (no
   island), cheap enough to live in the dashboard widget grid and the menu bar
@@ -196,7 +220,7 @@ sampler:
   - `hourlyRetentionDays` (default 90)
   - `cpuWarnPct` / `cpuCritPct` (e.g. 75 / 90)
   - `memWarnMb` / `memCritMb`
-  - `alarmSustainSamples` (default 1 = instantaneous)
+  - `alarmSustainSamples` (default 3 — hysteresis; set 1 for per-sample)
   - `onChange` reschedules the sampler if the interval changes and re-reads
     thresholds without restart.
 - **`ctx.cli`** — `pmon metrics [--since <iso|relative>] [--json]`. Prints a
@@ -204,13 +228,15 @@ sampler:
   `--since` window; `--json` emits the same rows the series API returns for
   scripting. Reads through the daemon API, consistent with other `pmon`
   subcommands.
-- **Where `restart_count` now comes from** — `ctx.incidents`. The `watchdog`
-  extension records a restart incident each time it restarts Pieces; the metrics
-  sampler queries that store (count of restart-kind incidents, within the active
-  window) and stamps it onto each sample. The `babysitter.stdout.log` scrape and
-  the `=== Restart attempt n/m ===` regex are dropped entirely. If `watchdog` is
-  not loaded, `restart_count` is `0` (no incident source) — documented, not an
-  error.
+- **Restarts in range (derived, not stored)** — `ctx.incidents`. The `watchdog`
+  extension records a restart incident each time it restarts Pieces. Rather than
+  stamping a `restart_count` onto each sample, the chart/CLI derive restarts on
+  demand by counting restart-kind incidents over the displayed time window
+  ("restarts in range"). The `babysitter.stdout.log` scrape, the
+  `=== Restart attempt n/m ===` regex, and the `restart_count` column are dropped
+  entirely. (This is distinct from the watchdog's internal escalation counter,
+  which is transient and not a metric.) If `watchdog` is not loaded, the restart
+  count is `0` (no incident source) — documented, not an error.
 
 ## Source to port / reuse
 
@@ -229,31 +255,43 @@ Port from `packages/metrics/bin/pieces_metrics.py`:
   hardcoded `39300`).
 - `collect_sample` → `collectSample()` (same null-sample-when-down behavior).
 - `insert_sample` → store insert.
-- `parse_restart_count` → **dropped**; replaced by an incident-store query.
+- `parse_restart_count` → **dropped**; restarts are derived on demand from the
+  incident store ("restarts in range"), not sampled or stored as a column.
 
 Reuse from the platform: `ctx.pieces` (`discoverPort` + `PiecesClient` from
 `@pieces-dev/core`) for health URL/port; core store retention/rollup helpers;
 core scheduler; core health rollup; core incident store.
 
-## Open questions
+## Resolved decisions
 
-- **Charting lib.** Recommend **uPlot** (≈40 KB, canvas, built for dense time
-  series) for the island over Chart.js/Recharts (heavier, slower on thousands of
-  points). Confirm before the island lands; the API shape is already
-  uPlot-friendly columnar so a swap is contained.
-- **Rollup aggregates.** Exact per-column aggregate set when collapsing raw →
-  hourly: avg vs avg+max for gauges, how to fold `health_status` (worst code in
-  bucket? count of non-200?), and whether to keep peak CPU/RSS as extra columns
-  vs separate min/avg/max triples. Affects the hourly table shape.
-- **Restart count semantics.** Cumulative-since-install vs within-retention-window
-  vs since-daemon-start — must match what `watchdog` actually records and what the
-  chart should show. Resolve jointly with the watchdog spec.
-- **Health smoothing default.** Whether `alarmSustainSamples` should default to >1
-  to avoid flapping the rollup on a single CPU spike (the Python alarmed
-  per-sample; the rollup is more visible, so flapping is costlier).
-- **uPlot in the island bundle.** Build/ship story for the first React island
-  (bundling uPlot, SSR fallback when JS is off) — coordinate with the core
-  dashboard shell.
+- **Charting lib → uPlot, bundled into the island.** uPlot (≈40 KB, canvas, built
+  for dense time series) over Chart.js/Recharts. Rationale: smallest bundle and
+  fastest canvas redraw on thousands of points; the columnar API shape is already
+  uPlot-friendly.
+- **Rollup aggregates.** Gauges (`cpu_percent`, `mem_rss_mb`, `mem_vsz_mb`,
+  `thread_count`, `open_files`) keep both `avg` and `max` and drop `min`;
+  `health_status` folds to `fail_count` + `sample_count` (hourly health %);
+  cumulative counters (`cpu_user_secs`, `cpu_sys_secs`, `process_age_secs`) keep
+  `last`. Rationale: `max` preserves the pre-kill spike `avg` would hide, and the
+  fail/sample pair gives an honest hourly health percentage.
+- **Restart count → no column; derived on demand.** No `restart_count` is stored;
+  restarts are computed by querying the core incident store (watchdog-recorded
+  restart incidents) over the displayed window ("restarts in range"). Rationale:
+  the incident store is the source of truth, so a stored column would only drift
+  and duplicate it. (Distinct from the watchdog's transient escalation counter.)
+- **Health smoothing → `alarmSustainSamples` default 3 (hysteresis).** Require N
+  consecutive over-threshold samples (~90s at 30s cadence) before warn/crit, and
+  the same N back under threshold before clearing; configurable, set 1 for the old
+  per-sample behavior. Rationale: the check now feeds the rollup (menu-bar color,
+  notifications), so flapping on a single spike is costly.
+- **Island build/ship → self-contained ESM bundle, daemon-served.** A per-island
+  ESM bundle (uPlot bundled in) built with esbuild/Vite, served at
+  `/islands/metrics.js`, mounted by the SSR shell via a
+  `<div data-island="metrics-chart" data-props='…'>` + `<script type="module">`,
+  with a server-rendered static fallback (current/last values table) inside the
+  mount node. Rationale: instant first paint and graceful no-JS degradation;
+  metrics is the reference island the core dashboard shell's island contract is
+  modeled on.
 
 ## Verification
 
@@ -265,15 +303,19 @@ core scheduler; core health rollup; core incident store.
   `utime/stime` correctly (KiB→MB division), `getThreadCount`/`countOpenFiles`
   do `lines − 1` and clamp at 0, every probe returns `null` on command failure.
 - `collectSample` writes a full row when up and a null-process row (real
-  `health_status`/`restart_count`) when `getPid()` is `null`.
-- `restart_count` is sourced from a mocked `ctx.incidents` query, never from a
-  log file (assert no filesystem read of `babysitter.stdout.log`).
+  `health_status`, all process fields `null`) when `getPid()` is `null`; no
+  restart field is written.
+- "Restarts in range" is sourced from a mocked `ctx.incidents` query over the
+  window, never from a sample column or a log file (assert no `restart_count`
+  column and no filesystem read of `babysitter.stdout.log`).
 - Store tests: migration creates both tables + the `ts` index; insert →
-  range-query round-trips; rollup collapses raw → hourly with the chosen
-  aggregates; prune respects `rawRetentionDays`/`hourlyRetentionDays` so neither
-  table grows unbounded.
-- Health: a synthetic sample over `cpuCritPct`/`memCritMb` reports `crit` to the
-  rollup; under `warn` reports `ok`; `alarmSustainSamples` gates flapping.
+  range-query round-trips; rollup collapses raw → hourly with `avg`+`max` gauges,
+  `fail_count`/`sample_count` health, and `last` counters; prune respects
+  `rawRetentionDays`/`hourlyRetentionDays` so neither table grows unbounded.
+- Health: a synthetic series sustained over `cpuCritPct`/`memCritMb` for
+  `alarmSustainSamples` samples reports `crit` to the rollup; a single spike under
+  that count does not flip the check, and it clears only after the same N samples
+  back under threshold (hysteresis).
 - API: `GET /api/ext/metrics/series?since=…` returns merged raw+hourly columnar
   JSON; `GET /api/ext/metrics/latest` returns the newest sample.
 - CLI: `pmon metrics --since 1h` prints the trend table; `--json` matches the

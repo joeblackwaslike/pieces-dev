@@ -111,9 +111,16 @@ way from the fix-it page button, `pmon doctor fix`, and `POST /actions/:id`.
   the window (explicit `from`/`to`, or `detectGaps()` for `allGaps`), then runs the
   gap-reconstruct pipeline (see Source to reuse). Long-running; streams progress (below).
   Defaults for `sources`/`since`/`minGapMinutes` come from settings.
-- **`doctor.restore`** — params `{ backupId: string }`. Restores a `backups` snapshot over the
-  live CouchBase Lite DB. **Destructive**; requires the watchdog stand-down handshake
-  (below) and explicit confirmation. Records the restore as an incident.
+- **`doctor.restore`** — params `{ backupId: string; force?: boolean }`. Marked `destructive:
+  true`. Restores a `backups` snapshot over the live CouchBase Lite DB. **Destructive**;
+  requires the watchdog stand-down handshake (below) and explicit confirmation. Before
+  touching the live DB it takes the pre-restore safety copy **through `backups`** — a real,
+  verified, retained `pre-restore-<timestamp>` snapshot — so "undo restore" is a first-class
+  verified artifact (reusing `backups`' verify + retention rather than inventing its own).
+  Refuses any restore whose chosen snapshot is meaningfully **smaller** than the current live
+  DB (past `data-integrity`'s collapse threshold) — the "restore an already-collapsed backup
+  over good data" foot-gun — overridable only with an explicit typed `--force`/confirm.
+  Records the restore as an incident.
 - **`doctor.relogin`** — params `{}`. Opens the Pieces desktop app so the user can sign back
   in. Goes through `ctx.process` (`open -a "Pieces"`) — never a raw spawn — and falls back to
   a deep link if needed. Non-destructive; no stand-down required.
@@ -137,29 +144,41 @@ Handshake (all over `ctx.bus` + `ctx.process`):
 
 1. `doctor` emits **`doctor.restore-begin`** `{ restoreId, expectedDurationMs }`.
 2. `watchdog` receives it, enters **stand-down**: it suspends its auto-relaunch loop and
-   acknowledges with **`watchdog.standby-ack`** `{ restoreId }`. `doctor` waits for the ack
-   (with a timeout; on timeout it aborts the restore and surfaces a problem rather than racing
-   watchdog).
+   acknowledges with **`watchdog.standby-ack`** `{ restoreId }`. `doctor` waits for the ack up
+   to `standbyAckTimeoutMs` (default ~5s). The behavior is conditional on participation:
+   - If a watchdog **is** registered as a restore participant but doesn't ack in time →
+     **abort the restore and raise a `crit` problem**. Proceeding while an active watchdog
+     might relaunch Pieces mid-write risks corruption, so we never race it.
+   - If **no** watchdog is participating (not installed / disabled) → **proceed immediately**;
+     there is nothing to stand down.
 3. `doctor` calls **`ctx.process.stop()`** (core's safe kill) to bring Pieces down, and
    confirms via PID discovery that no Pieces instance is running.
-4. `doctor` performs the file-level restore: snapshot the current DB aside (safety copy),
-   write the chosen `backups` snapshot into place, verify with `ltm-reader` (open + row/size
-   sanity) before committing.
+4. `doctor` takes the pre-restore safety copy **through `backups`** as a real, verified,
+   retained `pre-restore-<timestamp>` snapshot (reusing `backups`' verify + retention), then
+   performs the file-level restore: write the chosen `backups` snapshot into place and verify
+   with `ltm-reader` (open + row/size sanity) before committing.
 5. `doctor` calls **`ctx.process.restart()`** (or `start()`) to bring Pieces back via the
    core `open -a` + PID-guard policy.
 6. `doctor` emits **`doctor.restore-end`** `{ restoreId, ok }`. `watchdog` resumes its normal
-   relaunch loop on receipt. A core/watchdog **dead-man timer** also auto-resumes watchdog if
-   `restore-end` never arrives (e.g. `doctor` crashed mid-restore), so the system never gets
-   stuck with watchdog permanently disabled.
-7. `doctor` records a `restore` incident with the outcome and the safety-copy location.
+   relaunch loop on receipt. A **dead-man timer owned by core** — the only neutral,
+   always-alive party (not `watchdog`, which is being suppressed; not `doctor`, whose crash is
+   the very failure being guarded) — backstops this: core arms it on `doctor.restore-begin`
+   (default `max(2× expectedDurationMs, 5 min)`, capped), disarms it on `doctor.restore-end`,
+   and on fire **re-enables the watchdog** so supervision is never left permanently off (e.g.
+   if `doctor` crashed mid-restore).
+7. `doctor` records a `restore` incident with the outcome and the safety-copy snapshot id.
 
 **Progress streaming** for both restore and the (often multi-minute) gap-reconstruct run: the
 command opens a per-run channel on the API/WS surface. `doctor` registers an endpoint under
 `/api/ext/doctor/runs/:runId` and pushes progress frames over `WS /events` (and/or the
-namespaced WS). The gap-reconstruct pipeline's stdout-style progress (per-source counts,
-`injected/failed` running totals, summary-generation status) is adapted into structured
-frames `{ runId, phase: 'collect'|'inject'|'summarize', done, total, failed }`. The fix-it
-page subscribes and renders a live progress bar; the CLI prints the same frames as it streams.
+namespaced WS). Rather than intercepting/parsing the pipeline's `console.log` (brittle),
+gap-reconstruct's `PipelineOptions` gains an optional `onProgress?(frame)` callback (small,
+additive, backward-compatible — an absent callback leaves behavior unchanged). The pipeline
+emits structured typed frames `{ runId, phase: 'collect'|'inject'|'summarize', done, total,
+failed }` from its existing phase boundaries/totals. `doctor` passes an `onProgress` that
+forwards frames onto the WS surface; the gap-reconstruct CLI can render the same frames. The
+fix-it page subscribes and renders a live progress bar; the CLI prints the same frames as it
+streams.
 
 ### Contributions (HostContext)
 
@@ -168,11 +187,23 @@ page subscribes and renders a live progress bar; the CLI prints the same frames 
   `?problem=<id>` query param so deep-linked notifications open with the relevant problem
   pre-selected and its suggested action focused.
 - **`ctx.commands`** — registers `doctor.gap-reconstruct`, `doctor.restore`, `doctor.relogin`,
-  `doctor.integrity-check` (verbs; uniform dispatch across page/CLI/API).
+  `doctor.integrity-check` (verbs; uniform dispatch across page/CLI/API). A `destructive: true`
+  flag on the command drives confirmation uniformly across every surface (only `doctor.restore`
+  carries it today):
+  - **Dashboard** — a typed-confirm modal showing exactly what will be overwritten and that a
+    safety copy is taken first.
+  - **CLI** — `--yes` (or an interactive prompt on a TTY).
+  - **API** — a **two-step confirm token** beyond the standard bearer/CSRF: the first call
+    returns a short-lived token describing the impact; the second call must echo it. A stray
+    scripted call can't wipe the DB.
+
+  Non-destructive verbs (`doctor.relogin`, `doctor.integrity-check`, gap-reconstruct
+  `--dry-run`) require none of this.
 - **`ctx.cli`** — grafts the **`pmon doctor`** namespace onto the CLI:
   - `pmon doctor detect` — print the aggregated problem list (exit non-zero if any `crit`).
-  - `pmon doctor fix [--problem <id>] [--yes]` — run the suggested action for a problem (or all
-    auto-fixable); `--yes` skips the destructive-action confirmation.
+  - `pmon doctor fix [--problem <id>] [--yes]` — run the suggested action for a problem the
+    human selects (v1 is **user-initiated only** — `doctor` never auto-runs a repair); `--yes`
+    satisfies the destructive-action confirmation for `destructive` verbs.
   - `pmon doctor gaps [--since <iso|Nd>] [--min-gap <min>] [--run] [--sources <list>]
     [--dry-run]` — detect gaps; with `--run`, dispatch `doctor.gap-reconstruct`.
   - `pmon doctor restore --backup <id> [--yes]` — dispatch `doctor.restore` with the
@@ -185,7 +216,11 @@ page subscribes and renders a live progress bar; the CLI prints the same frames 
   and `open -a "Pieces"` for re-login. Never a raw spawn.
 - **`ctx.config`** — settings: `defaultSources` (`['claude','screentime','arc','git']`),
   `lookbackDays` (default 30), `minGapMinutes` (default 60), `reconcileConcurrency`,
-  `skipSummaries`, `gitRepos` (paths for the git source), `standbyAckTimeoutMs`.
+  `skipSummaries`, `gitRepos` (paths for the git source), `standbyAckTimeoutMs`. A per-action
+  `autoFix` setting (default **OFF**) is reserved as a future path: v1 is user-initiated only,
+  and `autoFix` would only ever apply to safe, idempotent, **additive** repairs (gap backfill
+  is the candidate) behind the activity-gating + dedup safeguards — never to destructive
+  actions, and never to restore.
 - **`ctx.store`** — persists the last computed problem snapshot and per-run progress/outcome.
 - **`ctx.health`** — read for rollup-derived problems; `doctor` may report its own
   `doctor:last-repair` check (warn if the most recent repair failed).
@@ -215,9 +250,11 @@ From **`gap-reconstruct`** (`packages/gap-reconstruct/src/`):
   (`Nd` or ISO), `--min-gap` (minutes → `minGapMs = min * 60_000`), `--sources`, `--dry-run`,
   `--limit`, `--concurrency` (default 5), `--skip-summaries`, `--repos`, `--port`.
 
-**Reuse strategy:** call `runPipeline`/`detectGaps` directly. To stream progress instead of
-relying on the pipeline's `console.log`, factor a progress callback into `PipelineOptions`
-(small, additive change to `gap-reconstruct`) or wrap stdout — see open questions.
+**Reuse strategy:** call `runPipeline`/`detectGaps` directly. To stream progress, add an
+optional `onProgress?(frame)` callback to `PipelineOptions` (small, additive,
+backward-compatible change to `gap-reconstruct`) and emit structured typed frames from the
+pipeline's existing phase boundaries — never intercept/parse `console.log` (brittle). See
+Resolved decisions.
 
 From **`ltm-reader`** (`packages/ltm-reader/src/`): `new LtmReader({ dbPath? })` over the live
 CouchBase Lite DB (`~/Library/com.pieces.os/production/Pieces/couchbase.cblite2/db.sqlite3`),
@@ -228,28 +265,54 @@ step (open + row/size sanity before committing the restored DB).
 From **`backups`** (sibling extension): `doctor.restore` consumes its snapshots. Expected
 contract — `backups` exposes a list of snapshots (id, timestamp, size, db path) via its API/a
 shared command, and `doctor` reads it to populate the restore picker and to resolve a
-`backupId` to a snapshot file. The file-level write + safety-copy lives in `doctor` (it owns
-the stop/restore/start sequence); `backups` owns capture/retention.
+`backupId` to a snapshot file. The file-level write lives in `doctor` (it owns the
+stop/restore/start sequence); `backups` owns capture/retention/verify — including the
+pre-restore safety copy, which `doctor` requests as a verified, retained
+`pre-restore-<timestamp>` snapshot rather than managing its own ad-hoc copy.
+
+## Resolved decisions
+
+- **Restore safety / guardrails:** The pre-restore safety copy is taken **through `backups`** —
+  a real, verified, retained `pre-restore-<timestamp>` snapshot — reusing `backups`' verify +
+  retention instead of `doctor` inventing its own, which makes "undo restore" a first-class
+  verified artifact. A restore **refuses** any chosen snapshot meaningfully *smaller* than the
+  current live DB (past `data-integrity`'s collapse threshold), overridable only with an
+  explicit typed `--force`/confirm. *Rationale:* this is the exact "restore an
+  already-collapsed backup over good data" foot-gun; note the asymmetry — genuine recovery
+  (collapsed 2.9 MB current ← good 129 MB snapshot) has a *larger* snapshot, so the guard
+  never blocks it.
+- **Stand-down ack timeout & dead-man timer:** `standbyAckTimeoutMs` defaults to ~5s. If a
+  watchdog **is** a registered restore participant but doesn't ack in time → **abort** the
+  restore and raise a `crit` problem; if **no** watchdog is participating (not installed /
+  disabled) → **proceed immediately**. The dead-man timer is owned by **core** — armed on
+  `doctor.restore-begin` (default `max(2× expectedDurationMs, 5 min)`, capped), disarmed on
+  `doctor.restore-end`, and on fire it re-enables the watchdog. *Rationale:* an active watchdog
+  relaunching Pieces mid-write risks corruption, so we never race it; core is the only neutral
+  always-alive party (not the suppressed watchdog, not `doctor` whose crash is the guarded
+  failure), so supervision is never left permanently off.
+- **Progress streaming mechanism:** Add an optional `onProgress?(frame)` callback to
+  gap-reconstruct's `PipelineOptions` (small, additive, backward-compatible — absent callback =
+  unchanged behavior) and emit structured typed frames `{ runId, phase:
+  'collect'|'inject'|'summarize', done, total, failed }` from the pipeline's existing phase
+  boundaries/totals; the gap-reconstruct CLI can render the same frames. *Rationale:* a typed
+  callback is clean and reusable, whereas intercepting/parsing `console.log` is brittle.
+- **Destructive-action confirmation:** Driven by a `destructive: true` flag on the command so
+  all surfaces enforce it uniformly — dashboard: a typed-confirm modal showing what's
+  overwritten and that a safety copy is made first; CLI: `--yes` (or an interactive prompt on a
+  TTY); API: a **two-step confirm token** beyond bearer/CSRF (first call returns a short-lived
+  token describing impact, second must echo it). *Rationale:* one flag means uniform
+  enforcement and a scripted call can't wipe the DB; non-destructive verbs (relogin,
+  integrity-check, gap-reconstruct `--dry-run`) need none of this.
+- **Auto-fix vs. user-initiated:** v1 is **user-initiated only** — `doctor` surfaces/offers and
+  the human decides; restore is **never** auto. A per-action `autoFix` setting (default OFF) is
+  reserved as a future path for safe, idempotent, **additive** repairs (gap backfill is the
+  candidate) behind the activity-gating + dedup safeguards — never extended to destructive
+  actions. *Rationale:* even "non-destructive" repairs mutate LTM (inject events, trigger
+  summaries), and for a project born of data loss the recovery tool must not make unsanctioned
+  changes.
 
 ## Open questions
 
-- **Restore safety / guardrails:** Where does the pre-restore safety copy live, and how long
-  is it retained — own `doctor` retention, or hand it to `backups` as a synthetic snapshot?
-  Should a restore refuse to run if the chosen snapshot is *smaller* than the current DB
-  (guarding against restoring an already-collapsed backup over good data)?
-- **Stand-down ack timeout & dead-man timer:** What are sane defaults for
-  `standbyAckTimeoutMs` and the watchdog auto-resume dead-man timer, and which component owns
-  the dead-man timer — core, `watchdog`, or `doctor`? If watchdog never acks, do we hard-abort
-  or fall back to a core-level "I will hold watchdog down" lock?
-- **Progress streaming mechanism:** Add a `onProgress?(frame)` callback to `PipelineOptions`
-  (clean, but edits `gap-reconstruct`), or wrap/intercept the pipeline's `console.log`
-  (no upstream change, but brittle string parsing)? Preference is the callback.
-- **Destructive-action confirmation:** What is the confirmation UX across surfaces — the
-  page needs a typed/explicit confirm modal; the CLI uses `--yes` or an interactive prompt;
-  does `POST /actions/doctor.restore` require an extra confirm token beyond the standard
-  bearer/CSRF, so a stray scripted call can't wipe the DB?
-- **Auto-fix vs. user-initiated:** Should `doctor` ever auto-run a non-destructive repair
-  (e.g. backfill a freshly detected gap) on a schedule, or always wait for a click/CLI verb?
 - **Deep-link scheme:** confirm the `pmon://doctor?problem=<id>` deep-link form and how the
   notify action button hands off to the dashboard page (browser URL vs. custom scheme handled
   by the menu-bar app).
@@ -268,8 +331,9 @@ the stop/restore/start sequence); `backups` owns capture/retention.
   and the restore blocks until `watchdog.standby-ack`; on ack-timeout the restore aborts and
   raises a problem; `ctx.process.stop()` is called and PID-clear is confirmed before any
   file write; `doctor.restore-end` is emitted and watchdog resumes; the dead-man timer
-  auto-resumes watchdog when `restore-end` never fires. A restore over a verified-bad DB
-  refuses (safety guardrail) per the resolved open question.
+  auto-resumes watchdog when `restore-end` never fires. A restore whose snapshot is
+  meaningfully smaller than the live DB refuses without `--force` (safety guardrail) per
+  Resolved decisions.
 - **Progress streaming:** a long-running `doctor.gap-reconstruct` emits ordered
   `collect → inject → summarize` frames on `WS /events`; the page progress bar advances and
   the CLI prints the same frames.

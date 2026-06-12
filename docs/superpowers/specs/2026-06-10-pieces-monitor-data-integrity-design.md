@@ -48,10 +48,13 @@ its bus events.
 ## Design
 
 The extension registers one **scheduled probe sweep** (default every 60 s, configurable). Each
-sweep iterates the configured database set, runs the six signal checks per DB against a
-**lock-safe snapshot copy**, reports a per-DB health status, compares against the persisted
-baseline, persists a fresh history sample, and emits bus events / incidents / notifications on
-state transitions (not on every sample — only on edge changes, to avoid alarm spam).
+sweep iterates the configured database set, runs the signal checks per DB using **tiered
+lock-safe reads** (free `statSync` for size, a cheap read-only/WAL-consistent SQLite connection
+for routine content probes, and a `VACUUM INTO` snapshot only for the slow-cadence deep
+integrity scan — see Signals & detection), reports a per-DB health status, compares against the
+persisted baseline, persists a fresh history sample, and emits bus events / incidents /
+notifications on state transitions (not on every sample — only on edge changes, to avoid alarm
+spam).
 
 ### Databases monitored
 
@@ -72,27 +75,43 @@ The configured set is glob-expanded at sweep start, so newly created `workstream
 
 ### Signals & detection
 
-Every check runs against a **point-in-time snapshot** of the DB (see Open questions —
-`VACUUM INTO` snapshot vs read-only open), so a concurrent Pieces write never corrupts the read
-and the integrity check sees a consistent image. Sizes are measured on the **live** file (the
-snapshot is for content reads); the snapshot is deleted after the sweep.
+Checks are **tiered by cost and cadence** so the catastrophic signal is free, routine signals
+are cheap and consistent, and only the deep corruption scan pays a snapshot cost (see Resolved
+decisions):
 
-1. **Integrity check (corruption).**
-   Run `sqlite3 <snapshot> 'PRAGMA integrity_check;'` (and `PRAGMA quick_check;` as a fast
-   pre-pass). Result `ok` → healthy; any other rows → corruption. Shell out to the system
-   `sqlite3` binary via `ctx.process`-style exec, or run `PRAGMA integrity_check` through the
-   same SQLite driver the core persistence shim already bundles. Output is captured into the
-   incident `data` for the doctor page. **crit** on failure.
+- **Size (every sweep, free):** `statSync` the **live** file. No DB open, instant, and it
+  catches the 129 MB → 2.9 MB catastrophe directly.
+- **Routine content probes (every sweep, cheap):** max seqno, row count, and freshness are read
+  via a **read-only, WAL-consistent SQLite connection** (`mode=ro`, using `better-sqlite3`,
+  which the core persistence shim already bundles). This is *not* sql.js — `ltm-reader`'s
+  current `readFileSync`-whole-file path can read a torn image mid-write and ignores the WAL, so
+  it is unsafe for live reads.
+- **Deep integrity (slow cadence, snapshot):** full `PRAGMA integrity_check` runs only on a slow
+  cadence (default hourly, configurable) against a `VACUUM INTO` snapshot for a consistent
+  image; the snapshot is deleted after the check.
+
+1. **Integrity check (corruption) — slow cadence.**
+   Run `PRAGMA integrity_check` (with `PRAGMA quick_check` as a fast pre-pass) on a **slow
+   cadence** (default hourly, configurable via `integrityCheckIntervalSec`) against a
+   `VACUUM INTO` snapshot, so a concurrent Pieces write never corrupts the read and the check
+   sees a consistent image. This is the only signal that pays the snapshot cost, and only
+   infrequently — running `VACUUM INTO` on a 129 MB file every 60 s would be wasteful, and deep
+   corruption is the least time-critical signal. Result `ok` → healthy; any other rows →
+   corruption. Run via the bundled SQLite driver (`better-sqlite3`) or the system `sqlite3`
+   binary through `ctx.process`-style exec. Output is captured into the incident `data` for the
+   doctor page. **crit** on failure.
 
 2. **Seqno gaps (couchbase only).**
-   For the couchbase store, use **ltm-reader** to read the monotonic `sequence` column. Open
-   `new LtmReader({ dbPath: '<snapshot>' })` and call `getAllDocuments('workstreamEvents',
-   limit)` ordered by `sequence DESC`; the rows carry `{ key, sequence, data }`. Compare the
-   **max sequence** and **row count** against the previous sample: if max-seqno advanced but
-   the count fell, or if there are holes between consecutive returned sequences beyond a
-   tolerated window, flag a gap. `count('workstreamEvents')` gives the authoritative row count
-   cheaply. A *dropping* max-seqno (sequence numbers should only ever increase) is a strong
-   corruption/rollback signal → **crit**.
+   For the couchbase store, use **ltm-reader**'s cheap **non-decoding** helpers against a
+   read-only/WAL-consistent open: `maxSequence('workstreamEvents')` and
+   `sequenceRange('workstreamEvents')` issue `MAX(sequence)` / `MIN(sequence)` / `COUNT(*)`
+   without decoding any Fleece bodies. These keep all CouchBase schema knowledge — table-name
+   escaping, the `sequence` column — inside `ltm-reader`, reusable by `doctor`. Compare the
+   **max sequence** and **row count** against the previous sample: if max-seqno advanced but the
+   count fell, or if there are holes beyond a tolerated window, flag a gap. A *dropping*
+   max-seqno (sequence numbers should only ever increase) is a strong corruption/rollback
+   signal → **crit**. `getAllDocuments` (which decodes Fleece bodies) is reserved for the one
+   case that needs a decoded body — reading the newest event's timestamp for freshness.
 
 3. **Sudden size collapse vs baseline (the headline alarm).**
    On each sweep, `statSync` the live DB file for `bytes`. Compare to the persisted
@@ -115,21 +134,28 @@ snapshot is for content reads); the snapshot is deleted after the sweep.
 
 5. **Freshness — "last workstream event N minutes ago" (most important for the project goal).**
    The project exists to keep LTM capture alive, so a **stale** workstream store is the signal
-   that matters most even when nothing is corrupt. Via **ltm-reader** against the couchbase
-   snapshot: `getAllDocuments('workstreamEvents', 1)` returns the newest event (ordered by
-   `sequence DESC`); read its event timestamp from the decoded `data` (the Fleece-decoded
-   document body), or fall back to the newest `sequence` advancing across sweeps as a liveness
-   proxy. `ageMinutes = now - lastEventTime`. Warn when `ageMinutes > freshnessWarnMinutes`
-   (default 30) **while Pieces is running and the user is presumed active**; crit at
-   `freshnessCritMinutes` (default 120). This is the check that would have caught "capture
-   silently stopped" independent of any size change.
+   that matters most even when nothing is corrupt. Via **ltm-reader** over the read-only/
+   WAL-consistent open: `getAllDocuments('workstreamEvents', 1)` decodes **just the one newest
+   row** (ordered by `sequence DESC`) and reads its event timestamp from the Fleece-decoded
+   `data`; the cheap `maxSequence` probe advancing across sweeps is the liveness fallback.
+   `ageMinutes = now - lastEventTime`. The alarm only fires when capture **should** be
+   happening: gate stale-freshness on **Pieces running and authed AND the user not idle**
+   (macOS HID idle time via `CGEventSourceSecondsSinceLastEventType` / IOKit), with an
+   **optional** bus subscription to `ltm-injector` activity as a sharper refinement when present
+   (it must **not** hard-depend on `ltm-injector`). Under those gates, warn when
+   `ageMinutes > freshnessWarnMinutes` (default 30); crit at `freshnessCritMinutes` (default
+   120). This is the check that would have caught "capture silently stopped" independent of any
+   size change, while staying quiet overnight or when the user is away.
 
-6. **Query latency.**
-   Time a cheap representative read per DB — for couchbase, `count('workstreamEvents')` via
-   ltm-reader; for plain sqlite DBs, a `SELECT count(*)` against the largest table or a
-   `PRAGMA page_count`. Record `latencyMs`. Warn at `latencyWarnMs` (default 500), crit at
-   `latencyCritMs` (default 3000). Rising latency is an early indicator of lock contention,
-   WAL bloat, or a DB under duress before it fully fails.
+6. **Query latency — constant-cost probe.**
+   The latency probe must be **fixed-cost** so the signal means "contention / IO duress," not
+   "the DB got bigger." Do **not** time `COUNT(*)` — it is O(rows) and would scale with DB size,
+   producing false "rising latency" as data legitimately grows. Instead, **time the indexed
+   `MAX(sequence)` probe already issued each sweep** (zero extra queries) for couchbase; for
+   plain sqlite DBs, time a `PRAGMA page_count`. Record `latencyMs`. Warn at `latencyWarnMs`
+   (default 500), crit at `latencyCritMs` (default 3000). Rising latency on a constant-cost probe
+   is an early indicator of lock contention, WAL bloat, or a DB under duress before it fully
+   fails.
 
 #### Status mapping
 
@@ -195,7 +221,8 @@ publishes on `ctx.bus`:
 
 ```ts
 interface DataIntegritySettings {
-  sweepIntervalSec: number;          // default 60
+  sweepIntervalSec: number;          // default 60   (size + cheap content probes)
+  integrityCheckIntervalSec: number; // default 3600 (slow-cadence deep PRAGMA integrity_check)
   databases: Array<{                 // which DBs to watch; defaults seeded from the table above
     id: string;
     glob: string;
@@ -211,7 +238,7 @@ interface DataIntegritySettings {
   freshnessCritMinutes: number;      // default 120
   latencyWarnMs: number;             // default 500
   latencyCritMs: number;             // default 3000
-  snapshotStrategy: "vacuum-into" | "readonly-open";  // default "vacuum-into"
+  snapshotStrategy: "vacuum-into" | "readonly-open";  // default "vacuum-into" (deep integrity scan only)
 }
 ```
 
@@ -245,10 +272,15 @@ tables:
   that) so it never grows unbounded — deliberately avoiding the unbounded-then-purge pattern
   that this project exists to fix.
 
-Baseline bootstrap: on first run with no baseline row, the current size is recorded as the
-baseline **only after** a clean integrity check; until then the DB is reported `warn`
-(`baseline-pending`) rather than silently trusting a possibly-already-bad file (see Open
-questions).
+Baseline bootstrap: on first run with no baseline row, the first baseline pin is gated on a
+**clean integrity check PLUS corroborating health signals** — Pieces running + authed + a
+plausible `workstreamEvents` row count + non-stale freshness. If all of those hold (the healthy
+common case), the baseline is **auto-pinned silently** — no blocking prompt. If the file looks
+suspiciously small against a **soft, corroboration-based floor** (not a hardcoded byte
+threshold), or the store looks empty / stale on first run, the baseline is **not** pinned:
+report `baseline-pending` as `warn` and surface a one-click "pin current state" confirm on the
+data / doctor page. This prevents canonizing an already-collapsed DB — the exact disaster where
+the monitor is installed *after* the collapse — as "normal."
 
 ## Source to reuse
 
@@ -260,8 +292,12 @@ import type { LtmReaderOptions, CollectionName } from "ltm-reader";
 
 // constructor: default dbPath is
 //   ~/Library/com.pieces.os/production/Pieces/couchbase.cblite2/db.sqlite3
-// override for snapshot reads:
-const r = new LtmReader({ dbPath: "<snapshot path>" });
+// open the LIVE file read-only / WAL-consistent for cheap per-sweep probes (NOT sql.js):
+const r = new LtmReader({ dbPath: "<live path>", mode: "ro" });
+
+// cheap NON-DECODING probes added for data-integrity (and reusable by doctor):
+await r.maxSequence("workstreamEvents");           // number — MAX(sequence), no Fleece decode
+await r.sequenceRange("workstreamEvents");         // { min, max, count } — MIN/MAX(sequence) + COUNT(*)
 
 await r.stats();                                  // Record<CollectionName, number> — count per collection
 await r.count("workstreamEvents");                // number — authoritative row count (cheap)
@@ -269,7 +305,7 @@ await r.getDocument("workstreamEvents", key);     // unknown | null — single F
 await r.listKeys("workstreamEvents", limit, off); // string[] — keys, ORDER BY sequence DESC
 await r.getAllDocuments("workstreamEvents", limit, off);
 //   Array<{ key: string; sequence: number; data: unknown }> — ORDER BY sequence DESC
-//   (this is what the CLI exposes as `dump`; gives us seqno + decoded body in one call)
+//   decodes Fleece bodies; reserved for the one freshness case (decode just the newest row)
 r.close();
 
 decodeFleeceToJSON(blob, sharedKeys);             // exported standalone Fleece→JSON decoder
@@ -277,47 +313,69 @@ decodeFleeceToJSON(blob, sharedKeys);             // exported standalone Fleece�
 
 Collection names (11): `workstreamEvents`, `workstreamSummaries`, `annotations`, `hints`,
 `tags`, `persons`, `websites`, `anchors`, `anchorPoints`, `wpeSources`, `wpeSourceWindows`.
-We rely chiefly on `workstreamEvents` for seqno-gap, freshness, and latency probes. The
-`sequence` column returned by `getAllDocuments` is the seqno source of truth; `count` is the
-row-count source of truth.
+We rely chiefly on `workstreamEvents` for seqno-gap, freshness, and latency probes. The cheap
+non-decoding `maxSequence` / `sequenceRange` helpers are the seqno + row-count source of truth
+for per-sweep probes (the latency probe times the indexed `maxSequence` query); `getAllDocuments`
+is used only to decode the single newest row for freshness. All CouchBase schema knowledge
+(table-name escaping, the `sequence` column, the read-only/WAL-consistent open) stays inside
+`ltm-reader`, reusable by `doctor`.
 
 **System `sqlite3`** — `PRAGMA integrity_check` / `PRAGMA quick_check` for corruption
 detection (run against the snapshot), and `PRAGMA page_count` for cheap size/latency probes on
 plain sqlite DBs.
 
 **`@pieces-dev/core`** — `discoverPort` / `PiecesClient` via `ctx.pieces`, used to know whether
-Pieces is actually **running** (so freshness staleness is only alarming when capture *should*
-be happening, not when the user has Pieces closed).
+Pieces is actually **running and authed** (so freshness staleness is only alarming when capture
+*should* be happening). Combined with **macOS HID idle time**
+(`CGEventSourceSecondsSinceLastEventType` / IOKit) for user-not-idle gating, and an **optional**
+bus subscription to `ltm-injector` activity as a sharper refinement when present (never a hard
+dependency).
 
-## Open questions
+## Resolved decisions
 
-1. **Lock-safe reads while Pieces is running.** Pieces holds the DB open with WAL.
-   `ltm-reader` currently `readFileSync`s the whole file into sql.js, which can read a torn
-   image mid-write. Options: (a) `sqlite3 <live> '.clone <snapshot>'` / `VACUUM INTO
-   '<snapshot>'` to get a consistent copy, then point `LtmReader`/`integrity_check` at the
-   snapshot; (b) open the live file **read-only / immutable** (`file:...?immutable=1` or
-   `mode=ro`). `VACUUM INTO` is safest and is the proposed default (`snapshotStrategy`), but
-   costs IO on a large DB — is per-sweep snapshotting acceptable at 129 MB, or should integrity
-   be sampled less often than size/freshness? Does `ltm-reader` need a read-only/immutable open
-   mode added so we can skip the copy for the cheap checks?
-2. **Seqno read method.** Is `getAllDocuments('workstreamEvents', N)` (decodes N bodies)
-   acceptable for the gap detector, or do we want a thin `maxSequence(collection)` /
-   `sequenceRange(collection)` helper added to `ltm-reader` that reads `MAX(sequence)` /
-   `MIN(sequence)` / `COUNT(*)` without decoding any Fleece bodies? The latter is far cheaper
-   for the per-sweep probe.
-3. **Latency probe shape.** Is `count('workstreamEvents')` a stable enough latency proxy, or
-   should we use a fixed `PRAGMA page_count` / a canned indexed lookup so the probe cost does
-   not scale with table size and skew the latency signal?
-4. **Baseline bootstrap trust.** On a brand-new install with no history, the first observed
-   size becomes the baseline — but what if the DB is *already* collapsed when the monitor first
-   runs (exactly our disaster, discovered late)? Proposed: require a clean integrity check
-   before pinning, and surface `baseline-pending` as `warn`. Do we also want to cross-check the
-   initial size against a sane floor for a known-active install, or prompt the user to confirm
-   the baseline on first run?
-5. **Freshness vs activity.** Staleness is only alarming when capture *should* be happening.
-   Gating on "Pieces process running" (via `ctx.pieces`) is straightforward; should we also gate
-   on user-presence / IDE activity (from `ltm-injector` signals on the bus) to avoid false
-   stale alarms overnight?
+1. **Lock-safe reads — tiered by cost / cadence.** Size collapse is caught by a free `statSync`
+   of the **live** file every sweep (no DB open, instant, catches the 129 MB → 2.9 MB
+   catastrophe). Routine content probes (max seqno, row count, freshness) run every sweep over a
+   **read-only, WAL-consistent** SQLite connection (`mode=ro`, via `better-sqlite3`, which core
+   persistence already bundles) — **not** sql.js, whose `readFileSync`-whole-file approach can
+   read a torn image and ignores the WAL. The full `PRAGMA integrity_check` runs only on a
+   **slow cadence** (default hourly, configurable) against a `VACUUM INTO` snapshot for a
+   consistent image.
+   *Rationale:* `VACUUM INTO` on a 129 MB file every 60 s is wasteful; the catastrophic signal is
+   a free stat, the routine signals are cheap consistent SQL, and only the deep (least
+   time-critical) corruption scan pays the snapshot cost, infrequently.
+
+2. **Seqno read method / encapsulation.** Add two cheap **non-decoding** helpers to `ltm-reader`
+   — `maxSequence(collection)` and `sequenceRange(collection)` (issuing
+   `MAX(sequence)` / `MIN(sequence)` / `COUNT(*)`) — plus a read-only / WAL-consistent open mode;
+   `data-integrity` calls these. `getAllDocuments` (which decodes Fleece bodies) is reserved for
+   when the newest event's timestamp is needed (freshness: decode just the one newest row).
+   *Rationale:* keeps CouchBase schema knowledge (table-name escaping, the `sequence` column)
+   inside `ltm-reader`, reusable by `doctor`, and avoids decoding bodies on every sweep.
+
+3. **Latency probe — constant cost.** Do **not** time `COUNT(*)` (O(rows) — scales with DB size
+   and creates false "rising latency" as data grows). Time the fixed-cost indexed `MAX(sequence)`
+   probe already issued each sweep (zero extra queries); for plain SQLite DBs, time a
+   `PRAGMA page_count`.
+   *Rationale:* a latency signal must be constant-cost to mean "contention / IO duress" rather
+   than "bigger DB."
+
+4. **Baseline bootstrap.** Gate the first baseline pin on a **clean integrity check plus
+   corroborating health signals** (Pieces running + authed + plausible `workstreamEvents` row
+   count + non-stale freshness). If those hold, auto-pin silently. If the file is suspiciously
+   small against a **soft, corroboration-based floor** (not a hardcoded byte threshold), or the
+   store looks empty / stale on first run, do not pin — report `baseline-pending` as `warn` and
+   surface a one-click "pin current state" confirm on the data / doctor page; no blocking prompt
+   in the healthy case.
+   *Rationale:* prevents canonizing an already-collapsed DB (monitor installed *after* the
+   collapse) as "normal."
+
+5. **Freshness vs activity.** Gate stale-freshness alarms on **Pieces running and authed AND the
+   user not idle** (macOS HID idle time via `CGEventSourceSecondsSinceLastEventType` / IOKit),
+   with an **optional** bus subscription to `ltm-injector` activity as a sharper refinement when
+   present (must not hard-depend on `ltm-injector`).
+   *Rationale:* the meaningful alarm is "actively working but capture stopped"; alarming
+   overnight / away is noise.
 
 ## Verification
 

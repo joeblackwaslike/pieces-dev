@@ -102,16 +102,18 @@ Overall lifecycle as a state machine:
       └──────────┬───────────┘                                                 │
                  │ within budget                                               │
                  ▼                                                             │
-      ┌──────────────────────┐  Tier 1: ctx.process.restart (API /os/restart) │
-      │   ESCALATION (FSM)    │  Tier 2: SIGTERM + relaunch                    │
-      │   escalating = true   │  Tier 3: SIGKILL + relaunch                    │
+      ┌──────────────────────┐  DETACHED async job (one-shot, not scheduled): │
+      │   ESCALATION (FSM)    │  Tier 1: ctx.process.restart (API /os/restart) │
+      │   escalating = true   │  Tier 2: SIGTERM + relaunch                    │
+      │   (health ticks no-op)│  Tier 3: SIGKILL + relaunch                    │
       └──────────┬───────────┘                                                 │
        healthy? ─┤── yes ─► lastCleanTime = now; escalating=false ─────────────┘
                  └── no (all tiers failed) ─► incident, stay; next tick retries
                  │
                  ▼
       ┌──────────────────────┐  notify CRITICAL; report crit; record incident
-      │       GAVE_UP        │  stop auto-restart; await manual command / relogin
+      │       GAVE_UP        │  latch (manual watchdog.reset) + one auto-rearm
+      │  (latched)           │  after GAVE_UP_COOLOFF; await command / relogin
       └──────────────────────┘
 ```
 
@@ -120,25 +122,41 @@ Overall lifecycle as a state machine:
 1. `GET /.well-known/health` via `ctx.pieces` client.
 2. `200` → `healthFailStreak = 0`; `health.report('pieces-os', 'ok', detail)`.
 3. non-200 / error → `healthFailStreak++`; `health.report('pieces-os', 'warn', …)`; log.
-4. When `healthFailStreak >= HEALTH_FAIL_LIMIT`:
+4. Lazy counter reset (matches the Python): if `restartCount > 0` and
+   `now - lastCleanTime > CLEAN_UPTIME_RESET`, reset `restartCount = 0` and log "clean uptime
+   — restart counter reset." No separate timer; this runs at the top of every health tick.
+5. When `healthFailStreak >= HEALTH_FAIL_LIMIT`:
    - If within startup grace (`now - startupTime < STARTUP_GRACE_SECS`): log, reset streak,
      hold off (no restart).
    - Else: reset streak, `restartCount++`. If `restartCount > MAX_RESTARTS` → enter GAVE_UP
-     (notify CRITICAL, `health.report('pieces-os', 'crit')`, record `gave-up` incident, stop
-     restarting). Otherwise run the escalation FSM; on success set `lastCleanTime = now`.
-5. Guard: if `escalating` is already true, skip this tick's restart logic (escalation can run
-   longer than one interval).
+     (notify CRITICAL, `health.report('pieces-os', 'crit')`, record `gave-up` incident, latch
+     — see below). Otherwise **dispatch the escalation FSM as a detached one-shot async job**
+     and set `escalating = true`; the health tick returns immediately. The job walks the tiers,
+     emits intermediate `restart-attempt` incidents, owns its own error handling (no scheduler
+     retry wraps it), and on success sets `lastCleanTime = now`; it always clears `escalating`
+     in a `finally`.
+6. Guard: if `escalating` is already true, the tick fires-and-returns immediately and no-ops
+   on all restart logic — the detached escalation job runs longer than one interval and must
+   not be re-entered.
+7. GAVE_UP latch + auto-rearm: GAVE_UP latches (we can't `sys.exit` like the Python). It clears
+   on the manual `watchdog.reset` command, OR auto-rearms once after a long cooloff
+   (`GAVE_UP_COOLOFF`, default 30 min; `0`/off = pure latch, no auto-rearm). On auto-rearm,
+   reset `restartCount = 0` and resume normal monitoring.
 
 #### Auth loop (`schedule` every `AUTH_CHECK_INTERVAL`, default 300s)
 
 1. `GET /user` via `ctx.pieces`; parse `{ user: { id, email } }` or flat `{ id, email }`.
    `loggedIn = bool(id || email)`; any non-200 → `loggedIn = false`.
-2. Transition `authLoggedIn → false`: record `auth-lost` incident, `notify` ("Auth Lost",
+2. Feed the health rollup every tick: `health.report('pieces-auth', loggedIn ? 'ok' : 'warn')`.
+   Logged-out reports `warn` (never `crit` — the process is alive; `crit` is reserved for
+   "Pieces down"). This surfaces the otherwise-invisible "LTM silently stopped capturing"
+   failure (menu bar tints amber) in ADDITION to the edge-triggered incident + notification.
+3. Transition `authLoggedIn → false`: record `auth-lost` incident, `notify` ("Auth Lost",
    action deep-link), `ctx.process.openApp()` to trigger re-login UI. Fires once per
    logged-out episode (only on the true→false edge — still-logged-out ticks log quietly).
-3. Transition `authLoggedIn → true` (after being false): record `auth-restored` incident,
+4. Transition `authLoggedIn → true` (after being false): record `auth-restored` incident,
    `notify` ("Auth Restored").
-4. `authLoggedIn = loggedIn`.
+5. `authLoggedIn = loggedIn`.
 
 #### Process / single-instance check (folded into the health tick, or its own short task)
 
@@ -152,16 +170,25 @@ Overall lifecycle as a state machine:
 #### Startup (on `activate`)
 
 - Set `startupTime = now`, `escalating = false`, optimistic `authLoggedIn = true`.
-- `ctx.process.killAll('startup cleanup')` then a single `ctx.process.launch()` —
-  **only if** the watchdog is configured to manage boot launch (see Open questions); otherwise
-  it assumes Pieces OS is already supervised and only restarts on failure.
+- `ctx.process.killAll('startup cleanup')` then a single `ctx.process.launch()` when
+  `manageBootLaunch` is `true` (the default — the watchdog owns boot launch because Pieces'
+  own launcher is neutralized, `com.pieces.os.launch.plist`→`/dev/null`, so nothing else
+  starts it). Single-launcher safety is preserved by `ctx.process`'s `open -a` + pre-launch
+  PID guard, which makes "launch" idempotent ("ensure exactly one instance"). Set
+  `manageBootLaunch: false` only if Pieces' native launcher is re-enabled, so exactly one
+  launcher remains and the dual-instance bug can't recur; the watchdog then only restarts on
+  failure.
 - Wait up to `STARTUP_GRACE_SECS` for the first health `200`; on timeout record a
   `startup-unhealthy` incident at `warn` (not a restart — grace suppresses that).
 
 #### 3-tier escalated restart (the FSM, mirrors `escalated_restart`)
 
-Set `escalating = true` for the duration. Each tier is delegated to `ctx.process`; the
-watchdog only sequences and evaluates health between tiers:
+Runs as a **detached one-shot async job**, dispatched by the health tick — NOT inline in the
+tick and NOT through `ctx.schedule`. It is ~90s+ of mostly waiting, and blocking the SHARED
+scheduler would stall every other extension's work. `escalating = true` is set when the job is
+dispatched; concurrent health ticks no-op while it's set. The job owns its own error handling
+(no scheduler retry wraps it). Each tier is delegated to `ctx.process`; the watchdog only
+sequences and evaluates health between tiers:
 
 1. **Tier 1 — API restart.** `ctx.process.restart({ mode: 'api' })` → issues `/os/restart`,
    waits `RESTART_WAIT` (30s), re-checks health. Success ⇒ done.
@@ -171,16 +198,16 @@ watchdog only sequences and evaluates health between tiers:
 3. **Tier 3 — SIGKILL + relaunch.** `ctx.process.restart({ mode: 'sigkill' })` → SIGKILL,
    cleanup, single `launch`, `waitForStartup`. Success ⇒ done.
 
-Record a `restart-attempt` incident per attempt (with the tier that finally restored health,
-or "all tiers failed"). On success: `lastCleanTime = now`. Always clear `escalating` in a
-`finally`. (Whether the daemon-level scheduler can run this inline or must dispatch it as a
-detached task is an Open question.)
+Record a `restart-attempt` incident per attempt as the job progresses (with the tier that
+finally restored health, or "all tiers failed"). On success: `lastCleanTime = now`. Always
+clear `escalating` in a `finally`.
 
-#### Restart-counter reset (`schedule` every minute, or evaluated each health tick)
+#### Restart-counter reset (lazy, evaluated each health tick)
 
-If `restartCount > 0` and `now - lastCleanTime >= CLEAN_UPTIME_RESET` (10 min), reset
-`restartCount = 0` and log "clean uptime — restart counter reset." This re-arms the budget
-after a stable window, exactly as the Python loop does.
+If `restartCount > 0` and `now - lastCleanTime > CLEAN_UPTIME_RESET` (10 min), reset
+`restartCount = 0` and log "clean uptime — restart counter reset." This is evaluated lazily at
+the top of the health tick — no dedicated timer — exactly as the Python loop does. It re-arms
+the budget after a stable window.
 
 #### Duplicate killer
 
@@ -194,8 +221,9 @@ and asks `ctx.process` to remediate. This is the central anti-DB-wipe guarantee.
   - `ok` — health endpoint returned 200 on the last tick.
   - `warn` — health failing but under the fail limit, or in startup grace, or auth lost.
   - `crit` — restart budget exhausted (GAVE_UP), or unrecoverable after all tiers.
-  - Optionally a second check `pieces-auth` (`ok` / `warn`) so auth state shows independently
-    in the rollup.
+  - A second check `pieces-auth` (`ok` / `warn`) so auth state shows independently in the
+    rollup: `warn` when logged out (LTM silently stops capturing — the process is alive, so
+    never `crit`), `ok` otherwise.
 - **`incidents`** — records structured, queryable "when & why" entries. Kinds:
   - `pieces-health-fail` — a health tick crossed the fail limit (severity `warn`).
   - `restart-attempt` — one escalated-restart attempt; `data` carries `{ attempt, tier,
@@ -218,16 +246,17 @@ and asks `ctx.process` to remediate. This is the central anti-DB-wipe guarantee.
   - `watchdog.kill-duplicates` — run the duplicate killer on demand.
   - `watchdog.relaunch` — kill all + single launch.
   - `watchdog.check-auth` — run the auth check immediately.
-  - `watchdog.reset-restart-counter` — clear `restartCount` / leave GAVE_UP manually.
+  - `watchdog.reset` — clear `restartCount` / un-latch GAVE_UP manually.
   - `watchdog.status` — return current state (counts, streak, auth, last clean time).
 - **`menu`** — a "Pieces OS" section showing current health + auth status and the above
   commands as menu items (Restart, Kill Duplicates, Re-check Auth).
 - **`settings`** (schema namespaced by extension id) — fields below under Configuration.
 - **`schedule`** — tasks:
-  - `health` — interval `HEALTH_INTERVAL`.
+  - `health` — interval `HEALTH_INTERVAL`. Fires-and-returns immediately; never blocks on
+    escalation (which runs as a detached one-shot job, not a scheduled task).
   - `auth` — interval `AUTH_CHECK_INTERVAL`.
-  - `counter-reset` — interval 60s (or folded into the health tick).
-  - (duplicate/process-alive check folded into the health tick).
+  - (counter-reset evaluated lazily inside the health tick — no dedicated task.)
+  - (duplicate/process-alive check folded into the health tick.)
 - **`process`** — the only path to the OS: `launch()`, `killAll(reason)`, `restart({ mode })`,
   PID discovery, duplicate detection, `openApp()` (open Pieces Desktop App for re-login),
   `waitForStartup(timeout)`. The watchdog issues no syscalls of its own.
@@ -256,7 +285,9 @@ const watchdogSettings = {
   maxRestarts: 5,            // MAX_RESTARTS — give-up threshold per budget window
   cleanUptimeResetSec: 600,  // CLEAN_UPTIME_RESET — clean uptime before counter reset (10 min)
   startupGraceSec: 90,       // STARTUP_GRACE_SECS — suppress health restarts during boot
-  manageBootLaunch: true,    // launch Pieces OS on activate vs. only restart on failure
+  manageBootLaunch: true,    // watchdog owns boot launch (Pieces' own launcher is neutralized);
+                             //   set false only if the native launcher is re-enabled
+  gaveUpCooloffSec: 1800,    // GAVE_UP_COOLOFF — single auto-rearm after GAVE_UP (30 min); 0 = pure latch
   startupWaitTimeoutSec: 60, // wait_for_startup timeout after a (re)launch
 } as const;
 ```
@@ -292,30 +323,36 @@ Port from `packages/babysitter/bin/pieces_babysitter.py`, mapping each function 
 Reuse `@pieces-dev/core` (`discoverPort`, `PiecesClient`, health helpers) — never re-implement
 port discovery or HTTP client logic in the extension.
 
-## Open questions
+## Resolved decisions
 
-1. **Escalation as a scheduled state machine.** The escalation can take >1 health interval
-   (Tier 1 alone waits `RESTART_WAIT` = 30s; each relaunch waits up to 60s). Should it run
-   inline within a health tick (relying on the `escalating` reentrancy guard so the next tick
-   no-ops), or be dispatched as a separate one-shot `ctx.schedule` task / detached async job
-   so the health task stays short and the scheduler isn't blocked? Leaning toward a detached
-   async job guarded by `escalating`, with intermediate `restart-attempt` incidents emitted as
-   it progresses.
-2. **Restart-counter reset.** Reset on a dedicated 60s scheduled task, or evaluate
-   `now - lastCleanTime` lazily inside the health tick (as the Python loop does)? Lazy is
-   simpler and matches the original; a dedicated task is cleaner but adds a timer. Also: should
-   reaching GAVE_UP latch until a manual `watchdog.reset-restart-counter` command, or auto-rearm
-   after a clean-uptime window like a normal counter? (Python `sys.exit(1)`s — we can't; we must
-   pick latch vs. auto-rearm.)
-3. **Boot launch responsibility.** Does the watchdog launch Pieces OS at boot (`manageBootLaunch:
-   true`, replacing the babysitter's startup launch), or does it only ever *restart* a process
-   that something else starts? If the daemon itself is the launchd-supervised supervisor, the
-   watchdog launching on activate is natural — but we must guarantee exactly one launcher to
-   avoid re-introducing the dual-instance bug. The `manageBootLaunch` setting exists to make
-   this explicit and disableable.
-4. **Auth check scope.** Should auth failure influence the overall health rollup (own
-   `pieces-auth` check), or stay incidents/notify only? Logged-out means LTM stops collecting —
-   arguably a `warn` in the rollup — but it's not a process-liveness problem.
+1. **Escalation execution — detached one-shot async job, not inline, not scheduled.** The
+   health tick dispatches the 3-tier escalation as a detached one-shot async job guarded by the
+   `escalating` reentrancy flag; the tick fires-and-returns immediately and no-ops while
+   `escalating` is set. The job walks the tiers, emits intermediate `restart-attempt` incidents
+   as it progresses, and owns its own error handling (no scheduler retry wraps it). *Rationale:*
+   escalation is ~90s+ of mostly waiting; blocking the SHARED scheduler would stall every other
+   extension's work.
+2. **Restart-counter reset — lazy; GAVE_UP latches with one auto-rearm.** Reset the restart
+   counter lazily inside the health tick (`now - lastCleanTime > CLEAN_UPTIME_RESET`), matching
+   the Python, with no extra timer. On reaching `MAX_RESTARTS`, latch into GAVE_UP (we can't
+   `sys.exit` like the Python) with a crit notification + a manual `watchdog.reset` command,
+   plus a single auto-rearm after a long cooloff (`gaveUpCooloffSec`, default 30 min; `0`/off =
+   pure latch). *Rationale:* hitting `MAX_RESTARTS` means Pieces is genuinely broken — blind
+   auto-rearm just resumes a doomed thrash loop (CPU/log burn, corruption risk), so escalate to
+   the human, but one long-cooloff rearm lets genuinely transient systemic issues self-heal.
+3. **Boot launch — watchdog owns it (`manageBootLaunch: true` by default).** The watchdog
+   launches Pieces at boot via `ctx.process`, because Pieces' own launcher is neutralized
+   (`com.pieces.os.launch.plist`→`/dev/null`) so nothing else starts it. Safety comes from
+   process control's `open -a` + pre-launch PID guard making "launch" idempotent ("ensure
+   exactly one instance"). *Rationale:* the setting lets you disable it if Pieces' native
+   launcher is ever re-enabled, preserving the single-launcher invariant that prevents the
+   dual-instance DB-wipe bug.
+4. **Auth in rollup — own `pieces-auth` check reporting `warn` when logged out.** Auth failure
+   feeds the health rollup as its own `pieces-auth` check reporting `warn` (not `crit`) when
+   logged out, in addition to the existing auth-lost/restored incident + notification.
+   *Rationale:* a logged-out Pieces silently stops LTM capture — exactly the invisible failure
+   to surface (menu bar tints amber) — but the process is alive, so `warn`, reserving `crit`
+   for "Pieces down".
 
 ## Verification
 

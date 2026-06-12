@@ -1,3 +1,5 @@
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { SqlParam, StoreApi } from '@pieces-dev/monitor-sdk';
 
@@ -19,7 +21,9 @@ export class Persistence {
 	private readonly now: () => number;
 
 	constructor(options: PersistenceOptions = {}) {
-		this.db = new DatabaseSync(options.path ?? ':memory:');
+		const path = options.path ?? ':memory:';
+		if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+		this.db = new DatabaseSync(path);
 		this.db.exec('PRAGMA journal_mode = WAL');
 		this.now = options.now ?? Date.now;
 		this.db.exec(

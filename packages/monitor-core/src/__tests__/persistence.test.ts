@@ -1,3 +1,6 @@
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { Persistence } from '../services/persistence.js';
 
@@ -32,6 +35,19 @@ describe('Persistence store', () => {
 		const removed = s.prune('entries', 'at', 5_000); // cutoff = now - 5000 = 5000
 		expect(removed).toBe(1);
 		expect(s.all('SELECT msg FROM entries')).toEqual([{ msg: 'fresh' }]);
+	});
+
+	test('creates the parent directory for a file-backed database', () => {
+		const dir = join(tmpdir(), `pmon-persist-test-${process.pid}`);
+		const file = join(dir, 'nested', 'db.sqlite');
+		try {
+			const s = new Persistence({ path: file }).openStore('t');
+			s.migrate(1, ['CREATE TABLE x (v INTEGER)']);
+			s.run('INSERT INTO x (v) VALUES (1)');
+			expect(s.get('SELECT v FROM x')).toEqual({ v: 1 });
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	test('migrations are tracked independently per namespace', () => {

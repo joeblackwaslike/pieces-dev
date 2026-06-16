@@ -8,18 +8,20 @@ export type AnchorType = 'FILE' | 'DIRECTORY' | 'UNKNOWN';
 
 /**
  * Canonical application descriptor. Defined once here and reused by
- * `app-registry` and `event-builder` so the shape cannot drift.
+ * `app-registry` and `event-builder` so the shape cannot drift. Identity
+ * fields are required; the PiecesOS metadata fields are optional so callers
+ * can build minimal apps (the registry constants still supply them all).
  */
 export type Application = {
 	id: string;
 	name: string;
 	version: string;
 	platform: 'MACOS' | 'WINDOWS' | 'LINUX';
-	onboarded: boolean;
-	privacy: 'OPEN' | 'PRIVATE';
-	capabilities: 'BLENDED' | 'LOCAL' | 'CLOUD';
-	mechanism: 'MANUAL' | 'INTERNAL';
-	automaticUnload: boolean;
+	onboarded?: boolean;
+	privacy?: 'OPEN' | 'PRIVATE';
+	capabilities?: 'BLENDED' | 'LOCAL' | 'CLOUD';
+	mechanism?: 'MANUAL' | 'INTERNAL';
+	automaticUnload?: boolean;
 };
 
 type IdeAnchor = { fullpath: string; type: AnchorType };

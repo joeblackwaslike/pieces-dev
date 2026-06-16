@@ -1,5 +1,3 @@
-import type { SeededWorkstreamEvent } from '@pieces.app/pieces-os-client';
-
 export type ConnectionState = 'connected' | 'disconnected' | 'auth-failed';
 
 /**
@@ -76,7 +74,8 @@ export type SourceName = 'claude' | 'screentime' | 'arc' | 'git';
 
 export type SourceEvent = {
 	timestamp: Date;
-	event: SeededWorkstreamEvent;
+	/** The payload our event builders produce and post to PiecesOS. */
+	event: WorkstreamEventInput;
 	source: SourceName;
 	dedupKey: string;
 };

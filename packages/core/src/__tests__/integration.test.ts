@@ -1,27 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { discoverPort } from '../port-discovery.js';
+import { VSCODE_APP } from '../app-registry.js';
 import { PiecesClient } from '../client.js';
 import { checkInEvent } from '../event-builder.js';
-import { VSCODE_APP } from '../app-registry.js';
+import { discoverPort } from '../port-discovery.js';
 
 describe('integration: PiecesOS', () => {
-  it('discovers port, posts event, verifies, deletes', async () => {
-    const port = await discoverPort();
-    if (!port) {
-      console.log('PiecesOS not running — skipping integration test');
-      return;
-    }
+	it('discovers port, posts event, verifies, deletes', async (ctx) => {
+		const port = await discoverPort();
+		if (!port) {
+			// Mark the test as skipped (not passed) so an offline PiecesOS does not
+			// report a false green.
+			ctx.skip();
+			return;
+		}
 
-    const client = new PiecesClient(port);
+		const client = new PiecesClient(port);
 
-    const healthy = await client.checkHealth();
-    expect(healthy).toBe(true);
+		const healthy = await client.checkHealth();
+		expect(healthy).toBe(true);
 
-    const event = checkInEvent(VSCODE_APP, 'Integration test — safe to delete');
-    const eventId = await client.postEvent(event);
-    expect(eventId).toBeTruthy();
+		const event = checkInEvent(VSCODE_APP, 'Integration test — safe to delete');
+		const eventId = await client.postEvent(event);
+		expect(eventId).toBeTruthy();
+		if (!eventId) throw new Error('postEvent returned no id');
 
-    const deleted = await client.deleteEvent(eventId!);
-    expect(deleted).toBe(true);
-  });
+		const deleted = await client.deleteEvent(eventId);
+		expect(deleted).toBe(true);
+	});
 });

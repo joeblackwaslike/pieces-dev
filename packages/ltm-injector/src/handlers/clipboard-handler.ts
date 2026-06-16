@@ -1,33 +1,18 @@
+import { copyEvent, VSCODE_APP } from '@pieces-dev/core';
 import * as vscode from 'vscode';
-import { PiecesClient, VSCODE_APP, copyEvent } from '@pieces-dev/core';
-import { EventQueue } from '../event-queue.js';
+import type { EmitFn } from '../emit.js';
 
-export function registerClipboardHandler(
-  client: PiecesClient,
-  queue: EventQueue,
-  connected: () => boolean,
-  log: (msg: string) => void,
-): vscode.Disposable[] {
-  const cmd = vscode.commands.registerCommand(
-    'pieces-ltm-injector.clipboardCopy',
-    async () => {
-      await vscode.commands.executeCommand(
-        'editor.action.clipboardCopyAction',
-      );
+export function registerClipboardHandler(emit: EmitFn): vscode.Disposable[] {
+	const cmd = vscode.commands.registerCommand('pieces-ltm-injector.clipboardCopy', async () => {
+		// Run the real copy first so the user's copy always works, then
+		// capture what landed on the clipboard.
+		await vscode.commands.executeCommand('editor.action.clipboardCopyAction');
 
-      const text = await vscode.env.clipboard.readText();
-      if (!text) return;
+		const text = await vscode.env.clipboard.readText();
+		if (!text) return;
 
-      const event = copyEvent(VSCODE_APP, text);
+		emit(copyEvent(VSCODE_APP, text), `copy: ${text.slice(0, 50)}`);
+	});
 
-      if (connected()) {
-        client.postEvent(event as Record<string, unknown>);
-        log(`copy: ${text.slice(0, 50)}...`);
-      } else {
-        queue.enqueue(event);
-      }
-    },
-  );
-
-  return [cmd];
+	return [cmd];
 }

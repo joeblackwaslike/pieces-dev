@@ -1,158 +1,147 @@
-import * as vscode from 'vscode';
 import { watch } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
 import { homedir } from 'node:os';
-import {
-  PiecesClient,
-  OS_SERVER_APP,
-  fileOpenEvent,
-  checkInEvent,
-} from '@pieces-dev/core';
-import { EventQueue } from '../event-queue.js';
+import { basename, join } from 'node:path';
+import { checkInEvent, fileOpenEvent, OS_SERVER_APP } from '@pieces-dev/core';
+import * as vscode from 'vscode';
+import type { EmitFn, LogFn } from '../emit.js';
 
 const CLAUDE_PROJECTS = join(homedir(), '.claude/projects');
+const TAIL_INTERVAL_MS = 2000;
 
-export function registerClaudeCodeHandler(
-  client: PiecesClient,
-  queue: EventQueue,
-  connected: () => boolean,
-  log: (msg: string) => void,
-): vscode.Disposable[] {
-  const watchedFiles = new Set<string>();
-  const fileSizes = new Map<string, number>();
+export function registerClaudeCodeHandler(emit: EmitFn, log: LogFn): vscode.Disposable[] {
+	const watchedFiles = new Set<string>();
+	const fileSizes = new Map<string, number>();
+	// Track every tailFile poll timer so they can all be cleared on dispose —
+	// otherwise they keep firing after the extension deactivates.
+	const fileIntervals = new Map<string, ReturnType<typeof setInterval>>();
 
-  function send(event: Record<string, unknown>, label: string): void {
-    if (connected()) {
-      client.postEvent(event);
-      log(label);
-    } else {
-      queue.enqueue(event as { application: { id: string; name: string; version: string; platform: string }; trigger: Record<string, boolean> });
-    }
-  }
+	let watcher: ReturnType<typeof watch> | undefined;
 
-  let watcher: ReturnType<typeof watch> | undefined;
+	try {
+		watcher = watch(CLAUDE_PROJECTS, { recursive: true }, (_eventType, filename) => {
+			if (!filename || !filename.endsWith('.jsonl')) return;
+			if (filename.includes('subagent')) return;
 
-  try {
-    watcher = watch(CLAUDE_PROJECTS, { recursive: true }, (eventType, filename) => {
-      if (!filename || !filename.endsWith('.jsonl')) return;
-      if (filename.includes('subagent')) return;
+			const fullPath = join(CLAUDE_PROJECTS, filename);
+			if (watchedFiles.has(fullPath)) return;
+			watchedFiles.add(fullPath);
 
-      const fullPath = join(CLAUDE_PROJECTS, filename);
-      if (watchedFiles.has(fullPath)) return;
-      watchedFiles.add(fullPath);
+			void tailFile(fullPath);
+		});
+	} catch (err) {
+		log(`Claude Code projects directory not watchable — skipping: ${err}`);
+		return [];
+	}
 
-      tailFile(fullPath);
-    });
-  } catch {
-    log('Claude Code projects directory not found — skipping');
-    return [];
-  }
+	function stopTailing(filePath: string): void {
+		const interval = fileIntervals.get(filePath);
+		if (interval) {
+			clearInterval(interval);
+			fileIntervals.delete(filePath);
+		}
+		watchedFiles.delete(filePath);
+	}
 
-  async function tailFile(filePath: string): Promise<void> {
-    try {
-      const content = await readFile(filePath, 'utf-8');
-      fileSizes.set(filePath, content.length);
+	async function tailFile(filePath: string): Promise<void> {
+		try {
+			const content = await readFile(filePath, 'utf-8');
+			fileSizes.set(filePath, content.length);
 
-      const checkInterval = setInterval(async () => {
-        try {
-          const newContent = await readFile(filePath, 'utf-8');
-          const prevSize = fileSizes.get(filePath) ?? 0;
-          if (newContent.length <= prevSize) return;
+			const checkInterval = setInterval(async () => {
+				try {
+					const newContent = await readFile(filePath, 'utf-8');
+					const prevSize = fileSizes.get(filePath) ?? 0;
+					if (newContent.length <= prevSize) return;
 
-          const newPart = newContent.slice(prevSize);
-          fileSizes.set(filePath, newContent.length);
+					const newPart = newContent.slice(prevSize);
+					fileSizes.set(filePath, newContent.length);
 
-          for (const line of newPart.split('\n').filter(Boolean)) {
-            processLine(line, filePath);
-          }
-        } catch {
-          clearInterval(checkInterval);
-          watchedFiles.delete(filePath);
-        }
-      }, 2000);
-    } catch {
-      watchedFiles.delete(filePath);
-    }
-  }
+					for (const line of newPart.split('\n').filter(Boolean)) {
+						processLine(line, filePath);
+					}
+				} catch (err) {
+					log(`claude-code: stopped tailing ${basename(filePath)}: ${err}`);
+					stopTailing(filePath);
+				}
+			}, TAIL_INTERVAL_MS);
 
-  function processLine(line: string, sessionPath: string): void {
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      return;
-    }
+			fileIntervals.set(filePath, checkInterval);
+		} catch (err) {
+			log(`claude-code: could not read ${basename(filePath)}: ${err}`);
+			watchedFiles.delete(filePath);
+		}
+	}
 
-    if (parsed.type !== 'assistant') return;
+	function processLine(line: string, sessionPath: string): void {
+		let parsed: Record<string, unknown>;
+		try {
+			parsed = JSON.parse(line) as Record<string, unknown>;
+		} catch {
+			// Partial/truncated trailing line while tailing — expected; skip.
+			return;
+		}
 
-    const content = parsed.content;
-    if (!Array.isArray(content)) return;
+		if (parsed.type !== 'assistant') return;
 
-    const project = inferProject(sessionPath);
+		const content = parsed.content;
+		if (!Array.isArray(content)) return;
 
-    for (const block of content) {
-      if (
-        typeof block !== 'object' ||
-        block === null ||
-        (block as Record<string, unknown>).type !== 'tool_use'
-      ) {
-        continue;
-      }
+		const project = inferProject(sessionPath);
 
-      const toolUse = block as { name?: string; input?: Record<string, unknown> };
-      const input = toolUse.input;
-      if (!input) continue;
+		for (const block of content) {
+			if (
+				typeof block !== 'object' ||
+				block === null ||
+				(block as Record<string, unknown>).type !== 'tool_use'
+			) {
+				continue;
+			}
 
-      if (
-        toolUse.name === 'Read' ||
-        toolUse.name === 'Edit' ||
-        toolUse.name === 'Write'
-      ) {
-        const fp =
-          (input.file_path as string | undefined) ??
-          (input.path as string | undefined);
-        if (fp && !isOpenInVSCode(fp)) {
-          send(
-            fileOpenEvent(OS_SERVER_APP, fp) as Record<string, unknown>,
-            `claude-code: ${toolUse.name} ${basename(fp)}`,
-          );
-        }
-      }
+			const toolUse = block as { name?: string; input?: Record<string, unknown> };
+			const input = toolUse.input;
+			if (!input) continue;
 
-      if (toolUse.name === 'Bash') {
-        const cmd = input.command as string | undefined;
-        if (cmd) {
-          send(
-            checkInEvent(
-              OS_SERVER_APP,
-              `Claude Code: ${cmd.slice(0, 100)}`,
-            ) as Record<string, unknown>,
-            `claude-code: bash in ${project}`,
-          );
-        }
-      }
-    }
-  }
+			if (toolUse.name === 'Read' || toolUse.name === 'Edit' || toolUse.name === 'Write') {
+				const fp = (input.file_path as string | undefined) ?? (input.path as string | undefined);
+				if (fp && !isOpenInVSCode(fp)) {
+					emit(fileOpenEvent(OS_SERVER_APP, fp), `claude-code: ${toolUse.name} ${basename(fp)}`);
+				}
+			}
 
-  function isOpenInVSCode(filePath: string): boolean {
-    return vscode.workspace.textDocuments.some(
-      (doc) => doc.uri.fsPath === filePath,
-    );
-  }
+			if (toolUse.name === 'Bash') {
+				const cmd = input.command as string | undefined;
+				if (cmd) {
+					emit(
+						checkInEvent(OS_SERVER_APP, `Claude Code: ${cmd.slice(0, 100)}`),
+						`claude-code: bash in ${project}`,
+					);
+				}
+			}
+		}
+	}
 
-  function inferProject(sessionPath: string): string {
-    const parts = sessionPath.split('/');
-    const projIdx = parts.indexOf('projects');
-    if (projIdx >= 0 && parts[projIdx + 1]) {
-      return parts[projIdx + 1]!.replace(/-/g, '/');
-    }
-    return 'unknown';
-  }
+	function isOpenInVSCode(filePath: string): boolean {
+		return vscode.workspace.textDocuments.some((doc) => doc.uri.fsPath === filePath);
+	}
 
-  const dispose = new vscode.Disposable(() => {
-    watcher?.close();
-  });
+	function inferProject(sessionPath: string): string {
+		const parts = sessionPath.split('/');
+		const projIdx = parts.indexOf('projects');
+		if (projIdx >= 0 && parts[projIdx + 1]) {
+			return parts[projIdx + 1]!.replace(/-/g, '/');
+		}
+		return 'unknown';
+	}
 
-  return [dispose];
+	const dispose = new vscode.Disposable(() => {
+		watcher?.close();
+		for (const interval of fileIntervals.values()) {
+			clearInterval(interval);
+		}
+		fileIntervals.clear();
+		watchedFiles.clear();
+	});
+
+	return [dispose];
 }

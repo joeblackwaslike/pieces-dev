@@ -80,12 +80,7 @@ export function evalSeqno(
 ): { suspect: boolean } {
 	if (maxSeqno === null || prevMaxSeqno === null) return { suspect: false };
 	if (maxSeqno < prevMaxSeqno) return { suspect: true };
-	if (
-		count !== null &&
-		prevCount !== null &&
-		maxSeqno > prevMaxSeqno &&
-		count < prevCount
-	) {
+	if (count !== null && prevCount !== null && maxSeqno > prevMaxSeqno && count < prevCount) {
 		return { suspect: true };
 	}
 	return { suspect: false };

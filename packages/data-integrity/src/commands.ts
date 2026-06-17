@@ -14,9 +14,7 @@ export function buildCommands(engine: DataIntegrityEngine): Command[] {
 			title: 'Check Data Integrity Now',
 			async: true,
 			expectedDurationMs: 5_000,
-			params: [
-				{ key: 'db', label: 'Database id (optional)', type: 'string', default: '' },
-			],
+			params: [{ key: 'db', label: 'Database id (optional)', type: 'string', default: '' }],
 			handler: (params) => {
 				const db = params?.db ? String(params.db) : undefined;
 				return engine.sweep({ deep: true, ...(db ? { onlyId: db } : {}) });

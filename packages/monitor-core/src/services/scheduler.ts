@@ -1,4 +1,4 @@
-import type { ScheduleHandle, ScheduleSpec, SchedulerApi } from '@pieces-dev/monitor-sdk';
+import type { ScheduleHandle, SchedulerApi, ScheduleSpec } from '@pieces-dev/monitor-sdk';
 
 type ErrorHandler = (error: unknown) => void;
 type Task = () => void | Promise<void>;

@@ -40,7 +40,9 @@ describe('DataIntegrityEngine — baseline bootstrap', () => {
 		h.setPieces({ authed: false });
 		await new DataIntegrityEngine(h.deps).sweep({ deep: true });
 		expect(h.deps.baseline.load('couchbase')).toBeNull();
-		expect(h.rec.health.some((r) => r.checkId === 'data.couchbase' && r.detail === 'baseline-pending')).toBe(true);
+		expect(
+			h.rec.health.some((r) => r.checkId === 'data.couchbase' && r.detail === 'baseline-pending'),
+		).toBe(true);
 	});
 });
 
@@ -50,10 +52,20 @@ describe('DataIntegrityEngine — size collapse', () => {
 		pin(h, 129 * MB);
 		withCouchbase(h, 2.9 * MB);
 		await new DataIntegrityEngine(h.deps).sweep();
-		expect(h.rec.incidents.some((i) => i.kind === 'size-collapse' && i.severity === 'crit')).toBe(true);
+		expect(h.rec.incidents.some((i) => i.kind === 'size-collapse' && i.severity === 'crit')).toBe(
+			true,
+		);
 		expect(h.rec.notifies.some((n) => n.severity === 'crit')).toBe(true);
-		expect(h.rec.events.some((e) => e.event === 'data-integrity.suspect' && (e.payload as { reason: string }).reason === 'collapse')).toBe(true);
-		expect(h.rec.health.some((r) => r.checkId === 'data.couchbase' && r.state === 'crit')).toBe(true);
+		expect(
+			h.rec.events.some(
+				(e) =>
+					e.event === 'data-integrity.suspect' &&
+					(e.payload as { reason: string }).reason === 'collapse',
+			),
+		).toBe(true);
+		expect(h.rec.health.some((r) => r.checkId === 'data.couchbase' && r.state === 'crit')).toBe(
+			true,
+		);
 	});
 
 	test('a persistent collapse records the incident only once (transition-only)', async () => {
@@ -93,8 +105,16 @@ describe('DataIntegrityEngine — missing & corruption', () => {
 		pin(h, 100 * MB);
 		h.setGlob('cb', []); // glob now matches nothing
 		await new DataIntegrityEngine(h.deps).sweep();
-		expect(h.rec.incidents.some((i) => i.kind === 'db-missing' && i.severity === 'crit')).toBe(true);
-		expect(h.rec.events.some((e) => e.event === 'data-integrity.suspect' && (e.payload as { reason: string }).reason === 'missing')).toBe(true);
+		expect(h.rec.incidents.some((i) => i.kind === 'db-missing' && i.severity === 'crit')).toBe(
+			true,
+		);
+		expect(
+			h.rec.events.some(
+				(e) =>
+					e.event === 'data-integrity.suspect' &&
+					(e.payload as { reason: string }).reason === 'missing',
+			),
+		).toBe(true);
 	});
 
 	test('a failed integrity check is corruption-suspected crit + suspect(corruption)', async () => {
@@ -103,8 +123,16 @@ describe('DataIntegrityEngine — missing & corruption', () => {
 		withCouchbase(h, 100 * MB);
 		h.setProbe(CB, { integrity: '*** btree page 3 corrupt ***' });
 		await new DataIntegrityEngine(h.deps).sweep({ deep: true });
-		expect(h.rec.incidents.some((i) => i.kind === 'corruption-suspected' && i.severity === 'crit')).toBe(true);
-		expect(h.rec.events.some((e) => e.event === 'data-integrity.suspect' && (e.payload as { reason: string }).reason === 'corruption')).toBe(true);
+		expect(
+			h.rec.incidents.some((i) => i.kind === 'corruption-suspected' && i.severity === 'crit'),
+		).toBe(true);
+		expect(
+			h.rec.events.some(
+				(e) =>
+					e.event === 'data-integrity.suspect' &&
+					(e.payload as { reason: string }).reason === 'corruption',
+			),
+		).toBe(true);
 	});
 
 	test('the couchbase tokenizer limitation is NOT treated as corruption', async () => {
@@ -127,8 +155,12 @@ describe('DataIntegrityEngine — freshness', () => {
 		await eng.sweep(); // seeds the advance clock at t0
 		h.clock.t += 130 * 60_000; // 130 min, seqno unchanged
 		await eng.sweep();
-		expect(h.rec.incidents.some((i) => i.kind === 'stale-events' && i.severity === 'crit')).toBe(true);
-		expect(h.rec.notifies.some((n) => /auth|stale|capture/i.test(n.title) || n.severity === 'crit')).toBe(true);
+		expect(h.rec.incidents.some((i) => i.kind === 'stale-events' && i.severity === 'crit')).toBe(
+			true,
+		);
+		expect(
+			h.rec.notifies.some((n) => /auth|stale|capture/i.test(n.title) || n.severity === 'crit'),
+		).toBe(true);
 	});
 
 	test('staleness is suppressed when the user is idle', async () => {
@@ -150,7 +182,13 @@ describe('DataIntegrityEngine — freshness', () => {
 		withCouchbase(h, 100 * MB);
 		h.setProbe(CB, { maxSeqno: 10, count: 5 });
 		await new DataIntegrityEngine(h.deps).sweep();
-		expect(h.rec.events.some((e) => e.event === 'data-integrity.freshness' && (e.payload as { id: string }).id === 'couchbase')).toBe(true);
+		expect(
+			h.rec.events.some(
+				(e) =>
+					e.event === 'data-integrity.freshness' &&
+					(e.payload as { id: string }).id === 'couchbase',
+			),
+		).toBe(true);
 	});
 });
 

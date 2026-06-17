@@ -76,7 +76,8 @@ class DataIntegrity implements Extension {
 		});
 		ctx.dashboard.widget({
 			id: 'freshness',
-			render: () => renderFreshness(deps.history.latest(readSettings(ctx.config).freshnessSource.dbId)),
+			render: () =>
+				renderFreshness(deps.history.latest(readSettings(ctx.config).freshnessSource.dbId)),
 		});
 
 		this.sweepIntervalSec = readSettings(ctx.config).sweepIntervalSec;

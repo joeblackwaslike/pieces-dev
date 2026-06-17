@@ -41,11 +41,13 @@ export interface Harness {
 	persisted: PersistedState;
 }
 
-export function makeHarness(opts: {
-	settings?: Partial<WatchdogSettings>;
-	persisted?: Partial<PersistedState>;
-	startTime?: number;
-} = {}): Harness {
+export function makeHarness(
+	opts: {
+		settings?: Partial<WatchdogSettings>;
+		persisted?: Partial<PersistedState>;
+		startTime?: number;
+	} = {},
+): Harness {
 	const clock = { t: opts.startTime ?? 0 };
 	let healthy: boolean | (() => boolean) = false;
 	let pids: number[] = [1];

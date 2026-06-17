@@ -26,13 +26,27 @@ describe('baseline store', () => {
 
 	test('pin then load round-trips', () => {
 		const b = createBaselineStore(memStore());
-		b.pin({ id: 'couchbase', baselineBytes: 1000, baselineMaxSeqno: 9, baselineCount: 4, pinnedAt: 1, pinnedReason: 'initial-pin' });
+		b.pin({
+			id: 'couchbase',
+			baselineBytes: 1000,
+			baselineMaxSeqno: 9,
+			baselineCount: 4,
+			pinnedAt: 1,
+			pinnedReason: 'initial-pin',
+		});
 		expect(b.load('couchbase')).toMatchObject({ baselineBytes: 1000, pinnedReason: 'initial-pin' });
 	});
 
 	test('ratchet raises the baseline only when the file grows', () => {
 		const b = createBaselineStore(memStore());
-		b.pin({ id: 'couchbase', baselineBytes: 1000, baselineMaxSeqno: 9, baselineCount: 4, pinnedAt: 1, pinnedReason: 'initial-pin' });
+		b.pin({
+			id: 'couchbase',
+			baselineBytes: 1000,
+			baselineMaxSeqno: 9,
+			baselineCount: 4,
+			pinnedAt: 1,
+			pinnedReason: 'initial-pin',
+		});
 		// grew → raise
 		expect(b.ratchet('couchbase', 1500, 12, 6, 2).baselineBytes).toBe(1500);
 		// shrank → unchanged (collapse must never lower the baseline)
@@ -40,11 +54,21 @@ describe('baseline store', () => {
 	});
 
 	test('canAutoPin refuses corrupt, stale, empty, or unauthed first-run states', () => {
-		expect(canAutoPin({ bytes: 100, integrityCrit: false, freshnessCrit: false, piecesAuthed: true })).toBe(true);
-		expect(canAutoPin({ bytes: 100, integrityCrit: true, freshnessCrit: false, piecesAuthed: true })).toBe(false);
-		expect(canAutoPin({ bytes: 100, integrityCrit: false, freshnessCrit: true, piecesAuthed: true })).toBe(false);
-		expect(canAutoPin({ bytes: 0, integrityCrit: false, freshnessCrit: false, piecesAuthed: true })).toBe(false);
-		expect(canAutoPin({ bytes: 100, integrityCrit: false, freshnessCrit: false, piecesAuthed: false })).toBe(false);
+		expect(
+			canAutoPin({ bytes: 100, integrityCrit: false, freshnessCrit: false, piecesAuthed: true }),
+		).toBe(true);
+		expect(
+			canAutoPin({ bytes: 100, integrityCrit: true, freshnessCrit: false, piecesAuthed: true }),
+		).toBe(false);
+		expect(
+			canAutoPin({ bytes: 100, integrityCrit: false, freshnessCrit: true, piecesAuthed: true }),
+		).toBe(false);
+		expect(
+			canAutoPin({ bytes: 0, integrityCrit: false, freshnessCrit: false, piecesAuthed: true }),
+		).toBe(false);
+		expect(
+			canAutoPin({ bytes: 100, integrityCrit: false, freshnessCrit: false, piecesAuthed: false }),
+		).toBe(false);
 	});
 });
 

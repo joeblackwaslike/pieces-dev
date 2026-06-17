@@ -46,9 +46,21 @@ export function defaultDataDir(): string {
 
 export function defaultDatabases(): DbConfig[] {
 	return [
-		{ id: 'couchbase', glob: 'couchbase.cblite2/db.sqlite3', kind: 'couchbase-lite', critical: true, enabled: true },
+		{
+			id: 'couchbase',
+			glob: 'couchbase.cblite2/db.sqlite3',
+			kind: 'couchbase-lite',
+			critical: true,
+			enabled: true,
+		},
 		{ id: 'workstream', glob: 'workstream*.sqlite', kind: 'sqlite', critical: true, enabled: true },
-		{ id: 'workstream-archive', glob: 'workstream*.archive.sqlite', kind: 'sqlite', critical: false, enabled: true },
+		{
+			id: 'workstream-archive',
+			glob: 'workstream*.archive.sqlite',
+			kind: 'sqlite',
+			critical: false,
+			enabled: true,
+		},
 		{ id: 'hints', glob: 'hints.sqlite', kind: 'sqlite', critical: false, enabled: true },
 		{ id: 'vector', glob: 'vector_db/*.sqlite', kind: 'sqlite', critical: false, enabled: true },
 	];
@@ -187,7 +199,10 @@ export function readSettings(config: ConfigApi): DataIntegritySettings {
 	return {
 		dataDir: str('dataDir', defaultDataDir()),
 		sweepIntervalSec: num('sweepIntervalSec', DATA_DEFAULTS.sweepIntervalSec),
-		integrityCheckIntervalSec: num('integrityCheckIntervalSec', DATA_DEFAULTS.integrityCheckIntervalSec),
+		integrityCheckIntervalSec: num(
+			'integrityCheckIntervalSec',
+			DATA_DEFAULTS.integrityCheckIntervalSec,
+		),
 		databases: config.get<DbConfig[]>('databases') ?? defaultDatabases(),
 		freshnessSource: config.get<FreshnessSource>('freshnessSource') ?? defaultFreshnessSource(),
 		collapseRatio: num('collapseRatio', DATA_DEFAULTS.collapseRatio),

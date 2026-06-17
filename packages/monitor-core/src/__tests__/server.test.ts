@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { buildServer } from '../server.js';
 import { buildServices } from '../runtime.js';
+import { buildServer } from '../server.js';
 
 function setup() {
 	const services = buildServices({ dbPath: ':memory:' });
 	services.commands.api().register({ id: 'ping', title: 'Ping', handler: () => 'pong' });
 	services.health.forExtension('core').report('core.hello', 'ok');
-	services.incidents.forExtension('core').record({ kind: 'boot', severity: 'info', summary: 'started' });
+	services.incidents
+		.forExtension('core')
+		.record({ kind: 'boot', severity: 'info', summary: 'started' });
 	const app = buildServer(services, { token: 'secret' });
 	return { app, services };
 }

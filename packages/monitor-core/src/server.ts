@@ -1,8 +1,8 @@
 import websocket from '@fastify/websocket';
 import type { ApiHandler } from '@pieces-dev/monitor-sdk';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
-import { renderShell } from './shell.js';
 import type { Services } from './runtime.js';
+import { renderShell } from './shell.js';
 
 export interface ServerOptions {
 	/** Bearer token required for state-changing endpoints. */
@@ -36,7 +36,10 @@ export function buildServer(services: Services, options: ServerOptions): Fastify
 		if (!authorized(req)) return reply.code(401).send({ error: 'unauthorized' });
 		const { id } = req.params as { id: string };
 		try {
-			const result = await services.commands.dispatch(id, (req.body ?? {}) as Record<string, unknown>);
+			const result = await services.commands.dispatch(
+				id,
+				(req.body ?? {}) as Record<string, unknown>,
+			);
 			return { result };
 		} catch (error) {
 			return reply.code(404).send({ error: (error as Error).message });

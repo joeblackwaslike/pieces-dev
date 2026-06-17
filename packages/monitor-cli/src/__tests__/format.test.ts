@@ -25,7 +25,14 @@ describe('CLI formatting', () => {
 
 	test('renderIncidents lists each incident, newest first', () => {
 		const out = renderIncidents([
-			{ id: '1', source: 'core', kind: 'daemon-start', severity: 'info', summary: 'started', at: 0 },
+			{
+				id: '1',
+				source: 'core',
+				kind: 'daemon-start',
+				severity: 'info',
+				summary: 'started',
+				at: 0,
+			},
 		]);
 		expect(out).toContain('daemon-start');
 		expect(out).toContain('started');

@@ -4,7 +4,7 @@ import type { WatchdogDeps } from './deps.js';
 import { WatchdogEngine } from './engine.js';
 import { httpGet, httpPost } from './http.js';
 import { buildMenuSection } from './menu.js';
-import { WATCHDOG_SCHEMA, readSettings } from './settings.js';
+import { readSettings, WATCHDOG_SCHEMA } from './settings.js';
 import { createStatePersistence } from './state.js';
 
 /** Build the injectable seam from a live {@link HostContext}. */
@@ -80,17 +80,15 @@ class Watchdog implements Extension {
 				if (next.healthIntervalSec !== this.healthIntervalSec) {
 					this.healthIntervalSec = next.healthIntervalSec;
 					this.healthTask?.cancel();
-					this.healthTask = ctx.schedule.schedule(
-						{ everyMs: this.healthIntervalSec * 1000 },
-						() => engine.healthTick(),
+					this.healthTask = ctx.schedule.schedule({ everyMs: this.healthIntervalSec * 1000 }, () =>
+						engine.healthTick(),
 					);
 				}
 				if (next.authCheckIntervalSec !== this.authIntervalSec) {
 					this.authIntervalSec = next.authCheckIntervalSec;
 					this.authTask?.cancel();
-					this.authTask = ctx.schedule.schedule(
-						{ everyMs: this.authIntervalSec * 1000 },
-						() => engine.authTick(),
+					this.authTask = ctx.schedule.schedule({ everyMs: this.authIntervalSec * 1000 }, () =>
+						engine.authTick(),
 					);
 				}
 			}),

@@ -1,3 +1,3 @@
 export { dataIntegrity } from './extension.js';
-export { DATA_INTEGRITY_SCHEMA, DATA_DEFAULTS } from './settings.js';
 export type { DataIntegritySettings } from './settings.js';
+export { DATA_DEFAULTS, DATA_INTEGRITY_SCHEMA } from './settings.js';

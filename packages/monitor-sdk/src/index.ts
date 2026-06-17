@@ -21,8 +21,8 @@ import type {
 	StoreApi,
 } from './services.js';
 
-export * from './types.js';
 export * from './services.js';
+export * from './types.js';
 
 /**
  * Everything an extension receives at activation. Grouped by concern:

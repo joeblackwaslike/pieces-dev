@@ -33,7 +33,9 @@ export async function startDaemon(): Promise<void> {
 	services.commands.api().register({ id: 'ping', title: 'Ping', handler: () => 'pong' });
 	services.menu.api().contribute(() => ({
 		title: 'Pieces Monitor',
-		items: [{ label: 'Open Dashboard', action: { type: 'open-url', url: `http://127.0.0.1:${PORT}/` } }],
+		items: [
+			{ label: 'Open Dashboard', action: { type: 'open-url', url: `http://127.0.0.1:${PORT}/` } },
+		],
 	}));
 	services.incidents.forExtension('core').record({
 		kind: 'daemon-start',

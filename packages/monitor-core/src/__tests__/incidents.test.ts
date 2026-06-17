@@ -4,7 +4,11 @@ import { Persistence } from '../services/persistence.js';
 
 function build(now: () => number) {
 	let n = 0;
-	return new Incidents(new Persistence({ path: ':memory:' }).openStore('incidents'), now, () => `id${++n}`);
+	return new Incidents(
+		new Persistence({ path: ':memory:' }).openStore('incidents'),
+		now,
+		() => `id${++n}`,
+	);
 }
 
 describe('Incident store', () => {

@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'vitest';
 import type { Extension } from '@pieces-dev/monitor-sdk';
+import { describe, expect, test } from 'vitest';
 import { Host } from '../host.js';
 import { buildServices } from '../runtime.js';
 

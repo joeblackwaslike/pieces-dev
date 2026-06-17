@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { Incident, IncidentApi, IncidentQuery, SqlParam, StoreApi } from '@pieces-dev/monitor-sdk';
+import type {
+	Incident,
+	IncidentApi,
+	IncidentQuery,
+	SqlParam,
+	StoreApi,
+} from '@pieces-dev/monitor-sdk';
 
 interface Row {
 	id: string;

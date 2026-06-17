@@ -14,7 +14,13 @@ export interface BaselineStore {
 	load(id: string): Baseline | null;
 	pin(baseline: Baseline): void;
 	/** Raise the baseline if the file grew; collapse never lowers it. Returns the effective baseline. */
-	ratchet(id: string, bytes: number, maxSeqno: number | null, count: number | null, now: number): Baseline;
+	ratchet(
+		id: string,
+		bytes: number,
+		maxSeqno: number | null,
+		count: number | null,
+		now: number,
+	): Baseline;
 }
 
 function toBaseline(row: BaselineRow): Baseline {

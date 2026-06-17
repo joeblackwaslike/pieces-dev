@@ -67,7 +67,9 @@ describe('WatchdogEngine — health tick', () => {
 	});
 
 	test('records pieces-health-fail and dispatches escalation at the fail limit', async () => {
-		const h = makeHarness({ settings: { healthFailLimit: 1, startupWaitTimeoutSec: 1, restartWaitSec: 1 } });
+		const h = makeHarness({
+			settings: { healthFailLimit: 1, startupWaitTimeoutSec: 1, restartWaitSec: 1 },
+		});
 		const engine = new WatchdogEngine(h.deps);
 		h.control.setHealthy(false);
 		h.clock.t = GRACE_MS + 1;
@@ -87,7 +89,9 @@ describe('WatchdogEngine — health tick', () => {
 
 		await engine.healthTick();
 
-		expect(h.rec.incidents.some((i) => i.kind === 'duplicate-instance' && i.severity === 'crit')).toBe(true);
+		expect(
+			h.rec.incidents.some((i) => i.kind === 'duplicate-instance' && i.severity === 'crit'),
+		).toBe(true);
 		expect(h.rec.process.some((c) => c.op === 'killPieces')).toBe(true);
 		expect(h.rec.process.some((c) => c.op === 'launchPieces')).toBe(true);
 		expect(h.rec.events.some((e) => e.event === 'watchdog.duplicate-killed')).toBe(true);

@@ -1,6 +1,6 @@
 import type { ConfigApi } from '@pieces-dev/monitor-sdk';
 import { describe, expect, test } from 'vitest';
-import { WATCHDOG_DEFAULTS, WATCHDOG_SCHEMA, readSettings } from '../settings.js';
+import { readSettings, WATCHDOG_DEFAULTS, WATCHDOG_SCHEMA } from '../settings.js';
 
 /** Minimal ConfigApi backed by a plain map (no schema-default resolution). */
 function fakeConfig(values: Record<string, unknown> = {}): ConfigApi {

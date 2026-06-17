@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import { type CommandRunner, ProcessControl } from '../services/process.js';
 
-function fake(respond: (cmd: string, args: string[]) => { stdout: string; code: number } | void) {
+function fake(
+	respond: (cmd: string, args: string[]) => { stdout: string; code: number } | undefined,
+) {
 	const calls: string[][] = [];
 	const run: CommandRunner = (cmd, args) => {
 		calls.push([cmd, ...args]);
@@ -27,7 +29,9 @@ const noSleep = async (): Promise<void> => {};
 
 describe('Process control', () => {
 	test('listPids parses pgrep output into numbers', () => {
-		const { run } = fake((cmd) => (cmd === 'pgrep' ? { stdout: '123\n456\n', code: 0 } : undefined));
+		const { run } = fake((cmd) =>
+			cmd === 'pgrep' ? { stdout: '123\n456\n', code: 0 } : undefined,
+		);
 		expect(new ProcessControl(run).listPids('Pieces OS')).toEqual([123, 456]);
 	});
 
@@ -37,7 +41,9 @@ describe('Process control', () => {
 	});
 
 	test('launchPieces is guarded — no `open` when Pieces is already running', async () => {
-		const { run, calls } = fake((cmd) => (cmd === 'pgrep' ? { stdout: '1\n', code: 0 } : undefined));
+		const { run, calls } = fake((cmd) =>
+			cmd === 'pgrep' ? { stdout: '1\n', code: 0 } : undefined,
+		);
 		await new ProcessControl(run).launchPieces();
 		expect(calls.some((c) => c[0] === 'open')).toBe(false);
 	});

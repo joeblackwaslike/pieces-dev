@@ -1,9 +1,15 @@
-import type { EventBusApi, HealthApi, IncidentApi, LogApi, NotifyApi } from '@pieces-dev/monitor-sdk';
+import type {
+	EventBusApi,
+	HealthApi,
+	IncidentApi,
+	LogApi,
+	NotifyApi,
+} from '@pieces-dev/monitor-sdk';
 import type { BaselineStore } from './baseline.js';
 import type { FileStat } from './fs.js';
 import type { HistoryStore } from './history.js';
-import type { DbProbe, ProbeOptions } from './sqlite.js';
 import type { DataIntegritySettings } from './settings.js';
+import type { DbProbe, ProbeOptions } from './sqlite.js';
 
 /** The injectable seam for {@link DataIntegrityEngine} — all I/O arrives through here. */
 export interface DataIntegrityDeps {

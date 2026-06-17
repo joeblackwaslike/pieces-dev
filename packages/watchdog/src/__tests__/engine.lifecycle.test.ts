@@ -22,7 +22,9 @@ describe('WatchdogEngine — boot launch', () => {
 
 		await engine.bootLaunch();
 
-		expect(h.rec.incidents.some((i) => i.kind === 'startup-unhealthy' && i.severity === 'warn')).toBe(true);
+		expect(
+			h.rec.incidents.some((i) => i.kind === 'startup-unhealthy' && i.severity === 'warn'),
+		).toBe(true);
 	});
 
 	test('does nothing when manageBootLaunch is off', async () => {

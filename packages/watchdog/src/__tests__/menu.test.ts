@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
-import { buildMenuSection } from '../menu.js';
 import type { WatchdogSnapshot } from '../engine.js';
+import { buildMenuSection } from '../menu.js';
 
 const base: WatchdogSnapshot = {
 	restartCount: 0,
@@ -34,7 +34,9 @@ describe('watchdog menu', () => {
 		const normal = buildMenuSection(base);
 		const gaveUp = buildMenuSection({ ...base, gaveUp: true });
 		const hasReset = (s: ReturnType<typeof buildMenuSection>) =>
-			s.items.some((i) => i.action?.type === 'run-command' && i.action.commandId === 'watchdog.reset');
+			s.items.some(
+				(i) => i.action?.type === 'run-command' && i.action.commandId === 'watchdog.reset',
+			);
 		expect(hasReset(normal)).toBe(false);
 		expect(hasReset(gaveUp)).toBe(true);
 	});

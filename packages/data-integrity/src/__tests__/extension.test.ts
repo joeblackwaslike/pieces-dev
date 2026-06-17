@@ -39,7 +39,11 @@ function makeFakeCtx(): { ctx: HostContext; rec: Recorded } {
 			schedule: (spec: ScheduleSpec) => {
 				const entry = { spec, cancelled: false };
 				rec.schedules.push(entry);
-				return { cancel: () => { entry.cancelled = true; } };
+				return {
+					cancel: () => {
+						entry.cancelled = true;
+					},
+				};
 			},
 		},
 		notify: { notify: noop },

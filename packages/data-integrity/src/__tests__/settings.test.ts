@@ -1,6 +1,11 @@
 import type { ConfigApi } from '@pieces-dev/monitor-sdk';
 import { describe, expect, test } from 'vitest';
-import { DATA_DEFAULTS, DATA_INTEGRITY_SCHEMA, defaultDatabases, readSettings } from '../settings.js';
+import {
+	DATA_DEFAULTS,
+	DATA_INTEGRITY_SCHEMA,
+	defaultDatabases,
+	readSettings,
+} from '../settings.js';
 
 function fakeConfig(values: Record<string, unknown> = {}): ConfigApi {
 	const store = new Map(Object.entries(values));
@@ -55,7 +60,12 @@ describe('data-integrity settings', () => {
 	test('schema exposes the scalar threshold fields', () => {
 		const keys = DATA_INTEGRITY_SCHEMA.sections.flatMap((s) => s.fields.map((f) => f.key));
 		expect(keys).toEqual(
-			expect.arrayContaining(['sweepIntervalSec', 'collapseRatio', 'walWarnBytes', 'freshnessCritMinutes']),
+			expect.arrayContaining([
+				'sweepIntervalSec',
+				'collapseRatio',
+				'walWarnBytes',
+				'freshnessCritMinutes',
+			]),
 		);
 	});
 

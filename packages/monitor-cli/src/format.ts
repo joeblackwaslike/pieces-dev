@@ -22,6 +22,9 @@ export function renderStatus(status: OverallStatus): string {
 export function renderIncidents(incidents: Incident[]): string {
 	if (incidents.length === 0) return 'No incidents recorded.';
 	return incidents
-		.map((i) => `${new Date(i.at).toISOString()} [${i.severity}] ${i.kind} — ${i.summary} (${i.source})`)
+		.map(
+			(i) =>
+				`${new Date(i.at).toISOString()} [${i.severity}] ${i.kind} — ${i.summary} (${i.source})`,
+		)
 		.join('\n');
 }

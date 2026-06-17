@@ -40,7 +40,9 @@ describe('data-integrity commands', () => {
 	test('data.pin-baseline pins the current state', async () => {
 		const { h, byId } = commands();
 		await byId.get('data.check')?.handler();
-		const result = (await byId.get('data.pin-baseline')?.handler({ db: 'couchbase' })) as { pinned: boolean };
+		const result = (await byId.get('data.pin-baseline')?.handler({ db: 'couchbase' })) as {
+			pinned: boolean;
+		};
 		expect(result.pinned).toBe(true);
 		expect(h.deps.baseline.load('couchbase')?.pinnedReason).toBe('operator-ack');
 	});
@@ -70,7 +72,9 @@ describe('data-integrity menu', () => {
 		expect(section.title).toBe('Pieces Data');
 		expect(section.items.some((i) => /couchbase/i.test(i.label))).toBe(true);
 		expect(
-			section.items.some((i) => i.action?.type === 'run-command' && i.action.commandId === 'data.check'),
+			section.items.some(
+				(i) => i.action?.type === 'run-command' && i.action.commandId === 'data.check',
+			),
 		).toBe(true);
 	});
 });

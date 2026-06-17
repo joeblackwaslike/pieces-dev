@@ -1,4 +1,11 @@
-import type { LogApi, LogEntry, LogLevel, LogQuery, SqlParam, StoreApi } from '@pieces-dev/monitor-sdk';
+import type {
+	LogApi,
+	LogEntry,
+	LogLevel,
+	LogQuery,
+	SqlParam,
+	StoreApi,
+} from '@pieces-dev/monitor-sdk';
 
 interface Row {
 	level: string;

@@ -38,7 +38,9 @@ describe('WatchdogEngine — escalation', () => {
 
 		await engine.escalate();
 
-		expect(h.rec.process.filter((c) => c.op === 'killPieces').some((c) => c.arg === 'kill')).toBe(true);
+		expect(h.rec.process.filter((c) => c.op === 'killPieces').some((c) => c.arg === 'kill')).toBe(
+			true,
+		);
 		expect(h.rec.incidents.some((i) => i.kind === 'restart-succeeded')).toBe(false);
 		expect(engine.snapshot().restartCount).toBe(1);
 	});
@@ -57,7 +59,10 @@ describe('WatchdogEngine — escalation', () => {
 	});
 
 	test('latches GAVE_UP when the restart budget is exceeded', async () => {
-		const h = makeHarness({ settings: { maxRestarts: 1, gaveUpCooloffSec: 1800 }, persisted: { restartCount: 1 } });
+		const h = makeHarness({
+			settings: { maxRestarts: 1, gaveUpCooloffSec: 1800 },
+			persisted: { restartCount: 1 },
+		});
 		const engine = new WatchdogEngine(h.deps);
 		h.control.setHealthy(true);
 
@@ -73,7 +78,10 @@ describe('WatchdogEngine — escalation', () => {
 	});
 
 	test('no auto-rearm scheduled when cooloff is 0', async () => {
-		const h = makeHarness({ settings: { maxRestarts: 1, gaveUpCooloffSec: 0 }, persisted: { restartCount: 1 } });
+		const h = makeHarness({
+			settings: { maxRestarts: 1, gaveUpCooloffSec: 0 },
+			persisted: { restartCount: 1 },
+		});
 		const engine = new WatchdogEngine(h.deps);
 		h.control.setHealthy(true);
 
@@ -84,7 +92,10 @@ describe('WatchdogEngine — escalation', () => {
 	});
 
 	test('firing the auto-rearm resets the budget and un-latches', async () => {
-		const h = makeHarness({ settings: { maxRestarts: 1, gaveUpCooloffSec: 1800 }, persisted: { restartCount: 1 } });
+		const h = makeHarness({
+			settings: { maxRestarts: 1, gaveUpCooloffSec: 1800 },
+			persisted: { restartCount: 1 },
+		});
 		const engine = new WatchdogEngine(h.deps);
 		h.control.setHealthy(true);
 		await engine.escalate();
@@ -96,7 +107,10 @@ describe('WatchdogEngine — escalation', () => {
 	});
 
 	test('reset() clears the budget, un-latches, and cancels a pending rearm', async () => {
-		const h = makeHarness({ settings: { maxRestarts: 1, gaveUpCooloffSec: 1800 }, persisted: { restartCount: 1 } });
+		const h = makeHarness({
+			settings: { maxRestarts: 1, gaveUpCooloffSec: 1800 },
+			persisted: { restartCount: 1 },
+		});
 		const engine = new WatchdogEngine(h.deps);
 		h.control.setHealthy(true);
 		await engine.escalate();

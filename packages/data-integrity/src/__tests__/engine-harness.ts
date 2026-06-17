@@ -38,10 +38,9 @@ const DEFAULT_DB: DbConfig = {
 	enabled: true,
 };
 
-export function makeEngineHarness(opts: {
-	settings?: Partial<DataIntegritySettings>;
-	databases?: DbConfig[];
-} = {}): EngineHarness {
+export function makeEngineHarness(
+	opts: { settings?: Partial<DataIntegritySettings>; databases?: DbConfig[] } = {},
+): EngineHarness {
 	const clock = { t: 1_000_000 };
 	const globs = new Map<string, string[]>();
 	const files = new Map<string, FileEntry>();
@@ -58,7 +57,8 @@ export function makeEngineHarness(opts: {
 		...opts.settings,
 	};
 	// point the freshness source at the default test db unless overridden
-	if (!opts.settings?.freshnessSource) settings.freshnessSource = { dbId: 'couchbase', table: 'evt' };
+	if (!opts.settings?.freshnessSource)
+		settings.freshnessSource = { dbId: 'couchbase', table: 'evt' };
 
 	const rec: EngineHarness['rec'] = { health: [], incidents: [], notifies: [], events: [] };
 	const store = memStore();
@@ -107,8 +107,7 @@ export function makeEngineHarness(opts: {
 		clock,
 		rec,
 		setGlob: (glob, paths) => globs.set(glob, paths),
-		setFile: (path, entry) =>
-			files.set(path, { walBytes: 0, shmPresent: false, ...entry }),
+		setFile: (path, entry) => files.set(path, { walBytes: 0, shmPresent: false, ...entry }),
 		removeFile: (path) => files.delete(path),
 		setProbe: (path, probe) => probes.set(path, { ...defaultProbe(), ...probe }),
 		setPieces: ({ healthy: h, authed: a }) => {

@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'vitest';
 import type { NotificationInput } from '@pieces-dev/monitor-sdk';
+import { describe, expect, test } from 'vitest';
 import { Notify } from '../services/notify.js';
 
 function setup(now: () => number) {

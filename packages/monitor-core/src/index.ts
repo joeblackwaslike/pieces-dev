@@ -4,9 +4,9 @@
  * this; the daemon entry point is `daemon.ts`.
  */
 
-export { Host } from './host.js';
-export { buildServices } from './runtime.js';
-export type { BuildOptions, Services } from './runtime.js';
-export { buildServer } from './server.js';
-export type { ServerOptions } from './server.js';
 export { startDaemon } from './daemon.js';
+export { Host } from './host.js';
+export type { BuildOptions, Services } from './runtime.js';
+export { buildServices } from './runtime.js';
+export type { ServerOptions } from './server.js';
+export { buildServer } from './server.js';

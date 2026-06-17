@@ -216,7 +216,10 @@ export class WatchdogEngine {
 		});
 	}
 
-	private async tierApi(base: string | null, s: ReturnType<WatchdogDeps['settings']>): Promise<boolean> {
+	private async tierApi(
+		base: string | null,
+		s: ReturnType<WatchdogDeps['settings']>,
+	): Promise<boolean> {
 		if (!base) return false;
 		try {
 			await this.deps.httpPost(`${base}/os/restart`);

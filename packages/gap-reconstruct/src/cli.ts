@@ -63,6 +63,7 @@ program
 	.option('--concurrency <n>', 'Parallel injection requests', Number.parseInt, 5)
 	.option('--skip-summaries', 'Skip summary generation after injection', false)
 	.option('--repos <paths>', 'Comma-separated repo paths for git source')
+	.option('--port <n>', 'Override PiecesOS port (skip auto-discovery)', Number.parseInt)
 	.action(async (opts) => {
 		const sources = (opts.sources as string).split(',').filter(Boolean);
 		const repos = opts.repos ? (opts.repos as string).split(',') : undefined;
@@ -73,6 +74,7 @@ program
 			concurrency: opts.concurrency as number,
 			skipSummaries: opts.skipSummaries as boolean,
 			repos,
+			port: opts.port as number | undefined,
 		};
 
 		if (opts.allGaps) {

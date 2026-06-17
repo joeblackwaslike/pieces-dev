@@ -14,6 +14,8 @@ export type PipelineOptions = {
 	concurrency: number;
 	skipSummaries: boolean;
 	repos?: string[];
+	/** Override PiecesOS port discovery (e.g. non-standard installs). */
+	port?: number;
 };
 
 const SOURCE_PRIORITY: Record<string, number> = {
@@ -185,7 +187,7 @@ export async function runPipeline(options: PipelineOptions): Promise<void> {
 		return;
 	}
 
-	const port = await discoverPort();
+	const port = await discoverPort(options.port ? { portOverride: options.port } : undefined);
 	if (!port) {
 		console.error('Error: PiecesOS not found. Is it running?');
 		process.exit(1);

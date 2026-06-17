@@ -27,7 +27,9 @@ let _FLValue_ToJSON: (value: unknown) => { buf: unknown; size: number };
 let _FLValue_AsString: (value: unknown) => { buf: unknown; size: number };
 let _FLArray_Count: (value: unknown) => number;
 let _FLArray_Get: (value: unknown, index: number) => unknown;
-let _FLSliceResult_Release: (slice: { buf: unknown; size: number }) => void;
+// FLSliceResult_Release is a static-inline in the Fleece header; the underlying
+// exported symbol is _FLBuf_Release(buf). Bound defensively below.
+let _FLBuf_Release: ((buf: unknown) => void) | null = null;
 
 function ensureLoaded() {
 	if (lib) return;
@@ -39,8 +41,14 @@ function ensureLoaded() {
 	_FLValue_AsString = lib.func('FLValue_AsString', FLSliceResult, ['void *']);
 	_FLArray_Count = lib.func('FLArray_Count', 'uint32_t', ['void *']);
 	_FLArray_Get = lib.func('FLArray_Get', 'void *', ['void *', 'uint32_t']);
-	// FLValue_ToJSON returns a heap-allocated FLSliceResult the caller must free.
-	_FLSliceResult_Release = lib.func('FLSliceResult_Release', 'void', [FLSliceResult]);
+	// FLValue_ToJSON returns a heap-allocated FLSliceResult the caller must free
+	// via _FLBuf_Release(buf). Some libcblite builds don't export it — bind
+	// defensively and accept the small leak rather than crash the decoder.
+	try {
+		_FLBuf_Release = lib.func('_FLBuf_Release', 'void', ['void *']);
+	} catch {
+		_FLBuf_Release = null;
+	}
 }
 
 function readSlice(slice: { buf: unknown; size: number }): string | null {
@@ -78,7 +86,7 @@ export function decodeFleeceToJSON(blob: Buffer, sharedKeys: string[]): unknown 
 	const result = _FLValue_ToJSON(value);
 	const rawJson = readSlice(result);
 	// readSlice copies the bytes out, so the FLSliceResult can be freed now.
-	_FLSliceResult_Release(result);
+	if (_FLBuf_Release && result.buf) _FLBuf_Release(result.buf);
 	if (!rawJson) return null;
 
 	const resolved = rawJson.replace(SHARED_KEY_REGEX, (_match, prefix: string, num: string) => {

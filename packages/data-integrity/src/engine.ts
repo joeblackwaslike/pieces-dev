@@ -102,7 +102,11 @@ export class DataIntegrityEngine {
 				this.deps.log.error(`sweep failed for ${db.id}`, err);
 			}
 		}
-		this.deps.health.report('data.sweep', sweepOk ? 'ok' : 'crit', sweepOk ? undefined : 'sweep error');
+		this.deps.health.report(
+			'data.sweep',
+			sweepOk ? 'ok' : 'crit',
+			sweepOk ? undefined : 'sweep error',
+		);
 		return reports;
 	}
 
@@ -114,7 +118,9 @@ export class DataIntegrityEngine {
 		forceDeep: boolean,
 	): Promise<DbReport> {
 		const checkId = `data.${db.id}`;
-		const files = this.deps.expandGlob(s.dataDir, db.glob).filter((f) => this.deps.statFile(f).exists);
+		const files = this.deps
+			.expandGlob(s.dataDir, db.glob)
+			.filter((f) => this.deps.statFile(f).exists);
 
 		// Missing — a previously-baselined critical DB with no files on disk.
 		if (files.length === 0) {
@@ -157,8 +163,19 @@ export class DataIntegrityEngine {
 		const prev = this.deps.history.latest(db.id);
 		const ageMinutes = isSource ? this.computeAge(db.id, pr.maxSeqno) : null;
 
-		const integrity = pr.integrity ? evalIntegrity(pr.integrity) : { state: 'ok' as HealthState, corrupt: false };
-		const fresh = evalFreshness(ageMinutes, gateActive, s.freshnessWarnMinutes, s.freshnessCritMinutes);
+		// An existing file the probe could not open (corruption, permission, or
+		// persistent lock) is an integrity failure, not a silent pass.
+		const integrity = !pr.opened
+			? { state: 'crit' as HealthState, corrupt: true }
+			: pr.integrity
+				? evalIntegrity(pr.integrity)
+				: { state: 'ok' as HealthState, corrupt: false };
+		const fresh = evalFreshness(
+			ageMinutes,
+			gateActive,
+			s.freshnessWarnMinutes,
+			s.freshnessCritMinutes,
+		);
 
 		// First-run baseline bootstrap.
 		let base: Baseline | null = this.deps.baseline.load(db.id);
@@ -180,7 +197,12 @@ export class DataIntegrityEngine {
 			}
 		}
 
-		const collapse = evalSizeCollapse(bytes, base.baselineBytes, s.collapseRatio, s.minCollapseBytes);
+		const collapse = evalSizeCollapse(
+			bytes,
+			base.baselineBytes,
+			s.collapseRatio,
+			s.minCollapseBytes,
+		);
 		const seqno = isSource
 			? evalSeqno(pr.maxSeqno, pr.count, prev?.maxSeqno ?? null, prev?.count ?? null)
 			: { suspect: false };
@@ -223,7 +245,11 @@ export class DataIntegrityEngine {
 
 		if (isSource) this.emitFreshness(db.id, ageMinutes, pr.maxSeqno);
 
-		this.deps.health.report(checkId, status, this.detail(bytes, base.baselineBytes, ageMinutes, pr.latencyMs));
+		this.deps.health.report(
+			checkId,
+			status,
+			this.detail(bytes, base.baselineBytes, ageMinutes, pr.latencyMs),
+		);
 		this.appendSample(db.id, bytes, wal, pr, ageMinutes, status);
 		this.lastStatus.set(db.id, status);
 		return { id: db.id, status, suspect: isSuspectNow, sample: this.deps.history.latest(db.id) };
@@ -233,7 +259,11 @@ export class DataIntegrityEngine {
 		if (maxSeqno === null) return null;
 		const now = this.deps.now();
 		const prev = this.lastAdvance.get(id);
-		if (!prev || maxSeqno > prev.seqno) {
+		// Re-seed the freshness clock on ANY change in maxSeqno. A decrease
+		// (rollback/restore) must not leave the clock stuck on the old, higher
+		// seqno — that would report an ever-growing bogus age. The decrease
+		// itself is surfaced separately by the sequence/corruption signal.
+		if (!prev || maxSeqno !== prev.seqno) {
 			this.lastAdvance.set(id, { seqno: maxSeqno, at: now });
 			return 0;
 		}
@@ -241,14 +271,24 @@ export class DataIntegrityEngine {
 	}
 
 	private emitFreshness(id: string, ageMinutes: number | null, maxSeqno: number | null): void {
-		this.deps.bus.emit('data-integrity.freshness', { id, ageMinutes, maxSeqno, at: this.deps.now() });
+		this.deps.bus.emit('data-integrity.freshness', {
+			id,
+			ageMinutes,
+			maxSeqno,
+			at: this.deps.now(),
+		});
 	}
 
 	private appendSample(
 		id: string,
 		bytes: number,
 		wal: { walBytes: number; shmPresent: boolean },
-		pr: { maxSeqno: number | null; count: number | null; latencyMs: number; integrity: string | null },
+		pr: {
+			maxSeqno: number | null;
+			count: number | null;
+			latencyMs: number;
+			integrity: string | null;
+		},
 		ageMinutes: number | null,
 		status: HealthState,
 	): void {
@@ -267,8 +307,15 @@ export class DataIntegrityEngine {
 		});
 	}
 
-	private detail(bytes: number, baselineBytes: number, ageMinutes: number | null, latencyMs: number): string {
-		const parts = [`${(bytes / 1_048_576).toFixed(1)}MB/${(baselineBytes / 1_048_576).toFixed(1)}MB`];
+	private detail(
+		bytes: number,
+		baselineBytes: number,
+		ageMinutes: number | null,
+		latencyMs: number,
+	): string {
+		const parts = [
+			`${(bytes / 1_048_576).toFixed(1)}MB/${(baselineBytes / 1_048_576).toFixed(1)}MB`,
+		];
 		if (ageMinutes !== null) parts.push(`age ${ageMinutes.toFixed(0)}m`);
 		parts.push(`${latencyMs.toFixed(0)}ms`);
 		return parts.join(' · ');
@@ -304,7 +351,13 @@ export class DataIntegrityEngine {
 				kind: 'size-collapse',
 				severity: 'crit',
 				summary: `${id} collapsed ${(ctx.collapse * 100).toFixed(0)}% below baseline`,
-				data: { id, bytes: ctx.bytes, baselineBytes: ctx.base.baselineBytes, dropRatio: ctx.collapse, baselinePinnedAt: ctx.base.pinnedAt },
+				data: {
+					id,
+					bytes: ctx.bytes,
+					baselineBytes: ctx.base.baselineBytes,
+					dropRatio: ctx.collapse,
+					baselinePinnedAt: ctx.base.pinnedAt,
+				},
 			});
 			this.deps.notify.notify({
 				title: 'Pieces data — Size Collapse',
@@ -370,7 +423,12 @@ export class DataIntegrityEngine {
 		this.prevSignals.set(id, signals);
 	}
 
-	private updateSuspect(id: string, isSuspectNow: boolean, reason: SuspectReason, status: HealthState): void {
+	private updateSuspect(
+		id: string,
+		isSuspectNow: boolean,
+		reason: SuspectReason,
+		status: HealthState,
+	): void {
 		const was = this.suspect.get(id) ?? false;
 		if (isSuspectNow && !was) {
 			this.suspect.set(id, true);

@@ -42,7 +42,12 @@ export class Config {
 	}
 
 	private write(namespace: string, key: string, value: unknown): void {
-		(this.values[namespace] ??= {})[key] = value;
+		let ns = this.values[namespace];
+		if (!ns) {
+			ns = {};
+			this.values[namespace] = ns;
+		}
+		ns[key] = value;
 		this.persist();
 		for (const handler of this.listeners.get(namespace) ?? []) handler(key, value);
 	}

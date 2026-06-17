@@ -1,20 +1,23 @@
 {
-  "name": "@pieces-dev/exporter",
-  "version": "0.1.0",
-  "description": "Backup Pieces OS data to prevent 9-month retention loss",
-  "type": "module",
-  "bin": {
-    "pieces-export": "./dist/export.js"
-  },
-  "scripts": {
-    "build": "tsc",
-    "start": "node dist/export.js"
-  },
-  "engines": {
-    "node": ">=22"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^5.4.5"
-  }
+	"name": "@pieces-dev/exporter",
+	"version": "0.1.0",
+	"description": "Backup Pieces OS data to prevent 9-month retention loss",
+	"type": "module",
+	"bin": {
+		"pieces-export": "./dist/export.js"
+	},
+	"scripts": {
+		"build": "tsc",
+		"start": "node dist/export.js"
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"dependencies": {
+		"@pieces-dev/core": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"typescript": "^5.4.5"
+	}
 }

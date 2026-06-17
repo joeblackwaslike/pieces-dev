@@ -3,7 +3,7 @@ import type { Services } from './runtime.js';
 
 const COLOR: Record<HealthState, string> = { ok: '#2e7d32', warn: '#f9a825', crit: '#c62828' };
 
-function escape(s: string): string {
+function escapeHtml(s: string): string {
 	return s.replace(/[&<>"']/g, (c) => {
 		switch (c) {
 			case '&':
@@ -34,7 +34,7 @@ export async function renderShell(services: Services): Promise<string> {
 		? incidents
 				.map(
 					(i) =>
-						`<li><span class="sev sev-${i.severity}">${escape(i.severity)}</span> <strong>${escape(i.kind)}</strong> — ${escape(i.summary)} <span class="muted">(${escape(i.source)})</span></li>`,
+						`<li><span class="sev sev-${i.severity}">${escapeHtml(i.severity)}</span> <strong>${escapeHtml(i.kind)}</strong> — ${escapeHtml(i.summary)} <span class="muted">(${escapeHtml(i.source)})</span></li>`,
 				)
 				.join('')
 		: '<li class="muted">No incidents recorded.</li>';
@@ -61,7 +61,7 @@ export async function renderShell(services: Services): Promise<string> {
 </style>
 </head>
 <body>
-<header><span class="dot"></span><h1>Pieces Monitor</h1><span class="muted">status: ${escape(status.state)}</span></header>
+<header><span class="dot"></span><h1>Pieces Monitor</h1><span class="muted">status: ${escapeHtml(status.state)}</span></header>
 <main>
 	<section><h2>Widgets</h2><div class="grid">${widgetGrid}</div></section>
 	<section class="card"><h2>Incidents</h2><ul>${timeline}</ul></section>

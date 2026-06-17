@@ -31,11 +31,16 @@ export class ProcessControl {
 	listPids(matcher: string): number[] {
 		const { stdout, code } = this.run('pgrep', ['-f', matcher]);
 		if (code !== 0) return [];
-		return stdout
-			.trim()
-			.split('\n')
-			.map((line) => Number(line.trim()))
-			.filter((n) => Number.isInteger(n) && n > 0);
+		return (
+			stdout
+				.trim()
+				.split('\n')
+				.map((line) => Number(line.trim()))
+				// Exclude our own pid: `pgrep -f "Pieces OS"` matches the full command
+				// line, so a daemon/CLI launched from a path containing "Pieces OS"
+				// would otherwise match (and potentially signal) itself.
+				.filter((n) => Number.isInteger(n) && n > 0 && n !== process.pid)
+		);
 	}
 
 	isPiecesRunning(): boolean {
@@ -103,6 +108,9 @@ function defaultRunner(cmd: string, args: string[]): RunResult {
 		return { stdout, code: 0 };
 	} catch (error) {
 		const e = error as { stdout?: Buffer | string; status?: number };
-		return { stdout: e.stdout?.toString() ?? '', code: typeof e.status === 'number' ? e.status : 1 };
+		return {
+			stdout: e.stdout?.toString() ?? '',
+			code: typeof e.status === 'number' ? e.status : 1,
+		};
 	}
 }

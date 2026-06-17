@@ -15,6 +15,10 @@ PORT=$(tr -d '[:space:]' < "$PORT_FILE")
 
 URL="http://localhost:$PORT/model_context_protocol/2025-03-26/mcp"
 
+# Initialize settings.json if it does not exist yet, so jq has valid input.
+mkdir -p "$(dirname "$SETTINGS")"
+[[ -f "$SETTINGS" ]] || echo '{}' > "$SETTINGS"
+
 # Update (or add) the pieces MCP server entry in settings.json
 TMP=$(mktemp)
 jq --arg url "$URL" '.mcpServers.pieces = {"type": "http", "url": $url}' "$SETTINGS" > "$TMP" \

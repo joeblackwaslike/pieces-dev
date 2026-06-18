@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findGapsInTimeline } from '../gap-detector.js';
+import { computeGaps, findGapsInTimeline } from '../gap-detector.js';
 
 describe('findGapsInTimeline', () => {
 	it('finds a gap between two event clusters', () => {
@@ -51,5 +51,56 @@ describe('findGapsInTimeline', () => {
 		const gaps = findGapsInTimeline(events, minGapMs);
 
 		expect(gaps.length).toBe(2);
+	});
+});
+
+describe('computeGaps', () => {
+	const since = new Date('2026-05-25T00:00:00Z');
+	const until = new Date('2026-05-25T23:59:59Z');
+	const HOUR = 60 * 60 * 1000;
+
+	it('treats an empty window as one whole-range gap', () => {
+		const gaps = computeGaps([], since, until, HOUR);
+		expect(gaps).toEqual([{ from: since, to: until }]);
+	});
+
+	it('detects a leading gap (since → first event)', () => {
+		const events = [{ timestamp: new Date('2026-05-25T06:00:00Z') }];
+		const gaps = computeGaps(events, since, until, HOUR);
+		expect(gaps[0]!.from.toISOString()).toBe(since.toISOString());
+		expect(gaps[0]!.to.toISOString()).toBe('2026-05-25T06:00:00.000Z');
+	});
+
+	it('detects a trailing gap (last event → until)', () => {
+		const events = [{ timestamp: new Date('2026-05-25T06:00:00Z') }];
+		const gaps = computeGaps(events, since, until, HOUR);
+		const trailing = gaps.at(-1)!;
+		expect(trailing.from.toISOString()).toBe('2026-05-25T06:00:00.000Z');
+		expect(trailing.to.toISOString()).toBe(until.toISOString());
+	});
+
+	it('derives leading/trailing gaps from the latest/earliest event even when input is unsorted', () => {
+		// Regression: trailing gap must use the chronologically last event, not
+		// the last array element. Input is deliberately out of order.
+		const events = [
+			{ timestamp: new Date('2026-05-25T20:00:00Z') }, // latest, listed first
+			{ timestamp: new Date('2026-05-25T04:00:00Z') }, // earliest, listed last
+		];
+		const gaps = computeGaps(events, since, until, HOUR);
+		expect(gaps[0]!.from.toISOString()).toBe(since.toISOString());
+		expect(gaps[0]!.to.toISOString()).toBe('2026-05-25T04:00:00.000Z');
+		const trailing = gaps.at(-1)!;
+		expect(trailing.from.toISOString()).toBe('2026-05-25T20:00:00.000Z');
+		expect(trailing.to.toISOString()).toBe(until.toISOString());
+	});
+
+	it('does not mutate the caller’s array', () => {
+		const events = [
+			{ timestamp: new Date('2026-05-25T20:00:00Z') },
+			{ timestamp: new Date('2026-05-25T04:00:00Z') },
+		];
+		const snapshot = events.map((e) => e.timestamp.toISOString());
+		computeGaps(events, since, until, HOUR);
+		expect(events.map((e) => e.timestamp.toISOString())).toEqual(snapshot);
 	});
 });

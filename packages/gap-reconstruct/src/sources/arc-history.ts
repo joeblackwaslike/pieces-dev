@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { OS_SERVER_APP, type SourceEvent, urlChangedEvent } from '@pieces-dev/core';
 import Database from 'better-sqlite3';
+import { roundTo5s } from './round.js';
 import type { Source } from './types.js';
 
 const ARC_HISTORY_PATH = join(
@@ -25,8 +26,13 @@ export class ArcHistorySource implements Source {
 		let db: ReturnType<typeof Database>;
 		try {
 			db = new Database(this.dbPath, { readonly: true });
-		} catch {
-			console.warn(`Arc History DB not found at ${this.dbPath} — skipping`);
+		} catch (err) {
+			// Default path is macOS; on other platforms (or non-default Arc
+			// installs) pass an explicit dbPath. Surface the real error rather
+			// than swallowing it.
+			console.warn(
+				`Arc History DB unavailable at ${this.dbPath} (${(err as Error).message}) — skipping`,
+			);
 			return;
 		}
 
@@ -52,15 +58,11 @@ export class ArcHistorySource implements Source {
 					timestamp: ts,
 					event: urlChangedEvent(OS_SERVER_APP, row.url, row.title || undefined),
 					source: 'arc',
-					dedupKey: `url_changed:${row.url}:${this.roundTo5s(ts)}`,
+					dedupKey: `url_changed:${row.url}:${roundTo5s(ts)}`,
 				};
 			}
 		} finally {
 			db.close();
 		}
-	}
-
-	private roundTo5s(date: Date): number {
-		return Math.round(date.getTime() / 5000) * 5000;
 	}
 }

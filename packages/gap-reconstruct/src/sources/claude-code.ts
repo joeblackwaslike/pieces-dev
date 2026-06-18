@@ -1,7 +1,7 @@
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import {
 	appEnterEvent,
@@ -11,9 +11,37 @@ import {
 	OS_SERVER_APP,
 	type SourceEvent,
 } from '@pieces-dev/core';
+import { roundTo5s } from './round.js';
 import type { Source } from './types.js';
 
-const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude/projects');
+const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
+
+/**
+ * Claude Code names each project directory after the project's absolute cwd
+ * with every path separator replaced by '-'. That encoding is lossy: a literal
+ * hyphen inside a segment (e.g. `pieces-dev`) is indistinguishable from a
+ * separator, so the naive `replace(/-/g, sep)` would mangle it into
+ * `pieces${sep}dev`. Rebuild the real path by probing the filesystem —
+ * accumulate tokens into a segment until `<path><sep><segment>` exists — so
+ * hyphenated names survive. Falls back to the naive decode when nothing on disk
+ * matches (e.g. the project has since moved or we are on another machine).
+ */
+export function decodeProjectDir(encoded: string): string {
+	const tokens = encoded.split('-').filter((t) => t !== '');
+	let path = '';
+	let pending = '';
+	for (const token of tokens) {
+		pending = pending ? `${pending}-${token}` : token;
+		const candidate = `${path}${sep}${pending}`;
+		if (existsSync(candidate)) {
+			path = candidate;
+			pending = '';
+		}
+	}
+	// Only trust the probed path if every token resolved against the filesystem.
+	if (path && !pending) return path;
+	return encoded.replace(/-/g, sep);
+}
 
 export class ClaudeCodeSource implements Source {
 	readonly name = 'claude';
@@ -49,8 +77,12 @@ export class ClaudeCodeSource implements Source {
 					files.push(join(entry.parentPath, entry.name));
 				}
 			}
-		} catch {
-			// Directory not found — no Claude Code sessions
+		} catch (err) {
+			// ENOENT just means there are no Claude Code sessions yet; anything
+			// else (e.g. EACCES) is a real problem the user should see.
+			if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+				console.warn(`[gap-reconstruct] failed to scan ${this.projectsDir}:`, err);
+			}
 		}
 
 		return files;
@@ -88,7 +120,7 @@ export class ClaudeCodeSource implements Source {
 						`Claude Code session in ${repoRoot ? basename(repoRoot) : 'unknown'}`,
 					),
 					source: 'claude',
-					dedupKey: `application_enter:claude-code:${this.roundTo5s(ts)}`,
+					dedupKey: `application_enter:claude-code:${roundTo5s(ts)}`,
 				};
 			}
 
@@ -102,7 +134,7 @@ export class ClaudeCodeSource implements Source {
 				timestamp: lastTimestamp,
 				event: appLeaveEvent(OS_SERVER_APP, 'Claude Code session ended'),
 				source: 'claude',
-				dedupKey: `application_leave:claude-code:${this.roundTo5s(lastTimestamp)}`,
+				dedupKey: `application_leave:claude-code:${roundTo5s(lastTimestamp)}`,
 			};
 		}
 	}
@@ -138,7 +170,7 @@ export class ClaudeCodeSource implements Source {
 						timestamp: ts,
 						event: fileOpenEvent(OS_SERVER_APP, filePath, undefined, repoRoot),
 						source: 'claude',
-						dedupKey: `file_open:${filePath}:${this.roundTo5s(ts)}`,
+						dedupKey: `file_open:${filePath}:${roundTo5s(ts)}`,
 					};
 				}
 			}
@@ -150,7 +182,7 @@ export class ClaudeCodeSource implements Source {
 						timestamp: ts,
 						event: checkInEvent(OS_SERVER_APP, `Terminal: ${cmd.slice(0, 100)}`),
 						source: 'claude',
-						dedupKey: `check_in:bash:${this.roundTo5s(ts)}`,
+						dedupKey: `check_in:bash:${roundTo5s(ts)}`,
 					};
 				}
 			}
@@ -165,15 +197,11 @@ export class ClaudeCodeSource implements Source {
 	}
 
 	private inferRepoRoot(sessionPath: string): string | undefined {
-		const parts = sessionPath.split('/');
+		const parts = sessionPath.split(sep);
 		const projectsIdx = parts.indexOf('projects');
 		if (projectsIdx < 0) return undefined;
 		const encoded = parts[projectsIdx + 1];
 		if (!encoded) return undefined;
-		return encoded.replace(/-/g, '/');
-	}
-
-	private roundTo5s(date: Date): number {
-		return Math.round(date.getTime() / 5000) * 5000;
+		return decodeProjectDir(encoded);
 	}
 }

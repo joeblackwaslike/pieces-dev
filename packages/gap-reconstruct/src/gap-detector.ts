@@ -25,6 +25,39 @@ export function findGapsInTimeline(events: Array<{ timestamp: Date }>, minGapMs:
 	return gaps;
 }
 
+/**
+ * Compute gaps within [since, until] given the events that fall in that window,
+ * including a leading gap (since → first event) and trailing gap (last event →
+ * until). Pure and order-independent: it sorts a copy once and derives the
+ * first/last event from that copy, so it never relies on the caller having
+ * pre-sorted the input.
+ */
+export function computeGaps(
+	events: Array<{ timestamp: Date }>,
+	since: Date,
+	until: Date,
+	minGapMs: number,
+): Gap[] {
+	if (events.length === 0) {
+		return [{ from: since, to: until }];
+	}
+
+	const sorted = [...events].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+	const gaps = findGapsInTimeline(sorted, minGapMs);
+
+	const firstEvent = sorted[0]!;
+	if (firstEvent.timestamp.getTime() - since.getTime() >= minGapMs) {
+		gaps.unshift({ from: since, to: firstEvent.timestamp });
+	}
+
+	const lastEvent = sorted[sorted.length - 1]!;
+	if (until.getTime() - lastEvent.timestamp.getTime() >= minGapMs) {
+		gaps.push({ from: lastEvent.timestamp, to: until });
+	}
+
+	return gaps.sort((a, b) => a.from.getTime() - b.from.getTime());
+}
+
 export async function detectGaps(since: Date, until: Date, minGapMs: number): Promise<Gap[]> {
 	const port = await discoverPort();
 	if (!port) {
@@ -53,22 +86,7 @@ export async function detectGaps(since: Date, until: Date, minGapMs: number): Pr
 	if (events.length === 0) {
 		console.log(`No events found in range ${since.toISOString()} → ${until.toISOString()}`);
 		console.log('The entire range is a gap.');
-		return [{ from: since, to: until }];
 	}
 
-	const gaps = findGapsInTimeline(events, minGapMs);
-
-	// Also check for a leading gap (since → first event)
-	const firstEvent = events.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())[0]!;
-	if (firstEvent.timestamp.getTime() - since.getTime() >= minGapMs) {
-		gaps.unshift({ from: since, to: firstEvent.timestamp });
-	}
-
-	// And a trailing gap (last event → until)
-	const lastEvent = events[events.length - 1]!;
-	if (until.getTime() - lastEvent.timestamp.getTime() >= minGapMs) {
-		gaps.push({ from: lastEvent.timestamp, to: until });
-	}
-
-	return gaps.sort((a, b) => a.from.getTime() - b.from.getTime());
+	return computeGaps(events, since, until, minGapMs);
 }

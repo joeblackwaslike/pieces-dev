@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { basename, extname, join } from 'node:path';
 import { checkInEvent, type SourceEvent, tabSwitchEvent, VSCODE_APP } from '@pieces-dev/core';
+import { roundTo5s } from './round.js';
 import type { Source } from './types.js';
 
 const LANGUAGE_MAP: Record<string, string> = {
@@ -33,6 +34,10 @@ export class GitLogSource implements Source {
 	}
 
 	async *collect(from: Date, to: Date): AsyncIterable<SourceEvent> {
+		if (this.repos.length === 0) {
+			console.warn('GitLogSource: no repositories configured (pass --repos) — skipping git events');
+			return;
+		}
 		for (const repo of this.repos) {
 			yield* this.collectRepo(repo, from, to);
 		}
@@ -89,7 +94,7 @@ export class GitLogSource implements Source {
 							timestamp: currentCommit.date,
 							event: checkInEvent(VSCODE_APP, `Committed: ${currentCommit.subject} in ${repoName}`),
 							source: 'git',
-							dedupKey: `check_in:${currentCommit.hash}:${this.roundTo5s(currentCommit.date)}`,
+							dedupKey: `check_in:${currentCommit.hash}:${roundTo5s(currentCommit.date)}`,
 						};
 						continue;
 					}
@@ -105,13 +110,9 @@ export class GitLogSource implements Source {
 					timestamp: currentCommit.date,
 					event: tabSwitchEvent(VSCODE_APP, filePath, language, repo),
 					source: 'git',
-					dedupKey: `tab_switch:${filePath}:${this.roundTo5s(currentCommit.date)}`,
+					dedupKey: `tab_switch:${filePath}:${roundTo5s(currentCommit.date)}`,
 				};
 			}
 		}
-	}
-
-	private roundTo5s(date: Date): number {
-		return Math.round(date.getTime() / 5000) * 5000;
 	}
 }

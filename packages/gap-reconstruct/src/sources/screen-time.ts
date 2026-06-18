@@ -10,6 +10,7 @@ import {
 	VSCODE_APP,
 } from '@pieces-dev/core';
 import Database from 'better-sqlite3';
+import { roundTo5s } from './round.js';
 import type { Source } from './types.js';
 
 const KNOWLEDGE_DB_PATH = join(homedir(), 'Library/Application Support/Knowledge/knowledgeC.db');
@@ -27,14 +28,24 @@ export class ScreenTimeSource implements Source {
 	}
 
 	async *collect(from: Date, to: Date): AsyncIterable<SourceEvent> {
+		// knowledgeC.db is part of Apple's Knowledge framework and exists only on
+		// macOS — there is no equivalent on Linux/Windows, so skip with a clear
+		// message instead of failing obscurely on a missing file.
+		if (process.platform !== 'darwin') {
+			console.warn('Screen Time is only available on macOS (knowledgeC.db) — skipping this source');
+			return;
+		}
+
 		const fromCoreData = from.getTime() / 1000 - COREDATA_EPOCH;
 		const toCoreData = to.getTime() / 1000 - COREDATA_EPOCH;
 
 		let db: ReturnType<typeof Database>;
 		try {
 			db = new Database(this.dbPath, { readonly: true });
-		} catch {
-			console.warn(`Screen Time DB not found at ${this.dbPath} — skipping`);
+		} catch (err) {
+			console.warn(
+				`Screen Time DB unavailable at ${this.dbPath} (${(err as Error).message}) — skipping`,
+			);
 			return;
 		}
 
@@ -66,7 +77,7 @@ export class ScreenTimeSource implements Source {
 					timestamp: startTs,
 					event: appEnterEvent(app, `${displayName} active`),
 					source: 'screentime',
-					dedupKey: `application_enter:${bundleId}:${this.roundTo5s(startTs)}`,
+					dedupKey: `application_enter:${bundleId}:${roundTo5s(startTs)}`,
 				};
 
 				if (isVSCode) {
@@ -76,7 +87,7 @@ export class ScreenTimeSource implements Source {
 							timestamp: checkInTime,
 							event: checkInEvent(app, `VS Code active`),
 							source: 'screentime',
-							dedupKey: `check_in:${bundleId}:${this.roundTo5s(checkInTime)}`,
+							dedupKey: `check_in:${bundleId}:${roundTo5s(checkInTime)}`,
 						};
 						checkInTime = new Date(checkInTime.getTime() + CHECK_IN_INTERVAL_S * 1000);
 					}
@@ -86,15 +97,11 @@ export class ScreenTimeSource implements Source {
 					timestamp: endTs,
 					event: appLeaveEvent(app, `${displayName} backgrounded`),
 					source: 'screentime',
-					dedupKey: `application_leave:${bundleId}:${this.roundTo5s(endTs)}`,
+					dedupKey: `application_leave:${bundleId}:${roundTo5s(endTs)}`,
 				};
 			}
 		} finally {
 			db.close();
 		}
-	}
-
-	private roundTo5s(date: Date): number {
-		return Math.round(date.getTime() / 5000) * 5000;
 	}
 }

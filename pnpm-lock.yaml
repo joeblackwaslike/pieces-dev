@@ -9,10 +9,6 @@ importers:
   .: {}
 
   packages/core:
-    dependencies:
-      '@pieces.app/pieces-os-client':
-        specifier: ^4.1.0
-        version: 4.1.0
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -184,9 +180,6 @@ packages:
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
-
-  '@pieces.app/pieces-os-client@4.1.0':
-    resolution: {integrity: sha512-Lsjwl5Lww6eN7LPi5lKjGSMcjHc0IER7C2UZnkBaDtYLeBk77ReZlTRvbD6Kk6yLcSm8fwJb0bAdJ+tvIqCA3A==}
 
   '@rollup/rollup-android-arm-eabi@4.62.0':
     resolution: {integrity: sha512-IPIQ55ythEHkfEd9jMEi32OQ7SxURsGA43JI22lj01OLZNt2NUbJX8YUHxkVWyQ6daHPNn0truF5nSj3DQp6YQ==}
@@ -657,8 +650,6 @@ snapshots:
     optional: true
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
-
-  '@pieces.app/pieces-os-client@4.1.0': {}
 
   '@rollup/rollup-android-arm-eabi@4.62.0':
     optional: true

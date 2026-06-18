@@ -34,7 +34,7 @@ type IdeAnchor = { fullpath: string; type: AnchorType };
  */
 export type WorkstreamEventInput = {
 	application: Application;
-	trigger: Record<string, boolean>;
+	trigger: Partial<Record<TriggerKey, true>>;
 	readable?: string;
 	context?: {
 		ide?: {

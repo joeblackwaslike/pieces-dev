@@ -4,7 +4,12 @@ import { PiecesClient } from '../client.js';
 import { checkInEvent } from '../event-builder.js';
 import { discoverPort } from '../port-discovery.js';
 
-describe('integration: PiecesOS', () => {
+// Opt-in only: this suite probes for a live PiecesOS (adding port-discovery
+// latency) and posts real data, so it must not run in the default unit/CI path.
+// Gate it behind RUN_INTEGRATION. Run with: RUN_INTEGRATION=1 pnpm test
+const RUN_INTEGRATION = process.env.RUN_INTEGRATION === '1';
+
+describe.runIf(RUN_INTEGRATION)('integration: PiecesOS', () => {
 	it('discovers port, posts event, verifies, deletes', async (ctx) => {
 		const port = await discoverPort();
 		if (!port) {

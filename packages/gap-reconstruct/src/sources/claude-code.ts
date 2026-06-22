@@ -1,0 +1,212 @@
+import { createReadStream, existsSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { basename, join, sep } from 'node:path';
+import { createInterface } from 'node:readline';
+import {
+	appEnterEvent,
+	appLeaveEvent,
+	checkInEvent,
+	fileOpenEvent,
+	OS_SERVER_APP,
+	type SourceEvent,
+} from '@pieces-dev/core';
+import { roundTo5s } from './round.js';
+import type { Source } from './types.js';
+
+const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
+
+/**
+ * Claude Code names each project directory after the project's absolute cwd
+ * with every path separator replaced by '-'. That encoding is lossy: a literal
+ * hyphen inside a segment (e.g. `pieces-dev`) is indistinguishable from a
+ * separator, so the naive `replace(/-/g, sep)` would mangle it into
+ * `pieces${sep}dev`. Rebuild the real path by probing the filesystem —
+ * accumulate tokens into a segment until `<path><sep><segment>` exists — so
+ * hyphenated names survive. Falls back to the naive decode when nothing on disk
+ * matches (e.g. the project has since moved or we are on another machine).
+ */
+export function decodeProjectDir(encoded: string): string {
+	const tokens = encoded.split('-').filter((t) => t !== '');
+	let path = '';
+	let pending = '';
+	for (const token of tokens) {
+		pending = pending ? `${pending}-${token}` : token;
+		const candidate = `${path}${sep}${pending}`;
+		if (existsSync(candidate)) {
+			path = candidate;
+			pending = '';
+		}
+	}
+	// Only trust the probed path if every token resolved against the filesystem.
+	if (path && !pending) return path;
+	return encoded.replace(/-/g, sep);
+}
+
+export class ClaudeCodeSource implements Source {
+	readonly name = 'claude';
+	private readonly projectsDir: string;
+
+	constructor(projectsDir?: string) {
+		this.projectsDir = projectsDir ?? CLAUDE_PROJECTS_DIR;
+	}
+
+	async *collect(from: Date, to: Date): AsyncIterable<SourceEvent> {
+		const jsonlFiles = await this.findJsonlFiles();
+
+		for (const filePath of jsonlFiles) {
+			try {
+				yield* this.parseSession(filePath, from, to);
+			} catch (err) {
+				// One unreadable/corrupt session must not abort ingestion of the rest.
+				console.warn(`[gap-reconstruct] failed to parse session ${filePath}:`, err);
+			}
+		}
+	}
+
+	private async findJsonlFiles(): Promise<string[]> {
+		const files: string[] = [];
+
+		try {
+			const entries = await readdir(this.projectsDir, {
+				recursive: true,
+				withFileTypes: true,
+			});
+
+			for (const entry of entries) {
+				if (
+					entry.isFile() &&
+					entry.name.endsWith('.jsonl') &&
+					!entry.parentPath.includes('subagent')
+				) {
+					files.push(join(entry.parentPath, entry.name));
+				}
+			}
+		} catch (err) {
+			// ENOENT just means there are no Claude Code sessions yet; anything
+			// else (e.g. EACCES) is a real problem the user should see.
+			if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+				console.warn(`[gap-reconstruct] failed to scan ${this.projectsDir}:`, err);
+			}
+		}
+
+		return files;
+	}
+
+	private async *parseSession(filePath: string, from: Date, to: Date): AsyncIterable<SourceEvent> {
+		const rl = createInterface({
+			input: createReadStream(filePath),
+			crlfDelay: Number.POSITIVE_INFINITY,
+		});
+
+		let sessionStartEmitted = false;
+		let lastTimestamp: Date | undefined;
+		const repoRoot = this.inferRepoRoot(filePath);
+
+		for await (const line of rl) {
+			let parsed: Record<string, unknown>;
+			try {
+				parsed = JSON.parse(line) as Record<string, unknown>;
+			} catch {
+				continue;
+			}
+
+			const ts = this.extractTimestamp(parsed);
+			if (!ts || ts < from || ts > to) continue;
+
+			lastTimestamp = ts;
+
+			if (!sessionStartEmitted && (parsed.type === 'human' || parsed.type === 'user')) {
+				sessionStartEmitted = true;
+				yield {
+					timestamp: ts,
+					event: appEnterEvent(
+						OS_SERVER_APP,
+						`Claude Code session in ${repoRoot ? basename(repoRoot) : 'unknown'}`,
+					),
+					source: 'claude',
+					dedupKey: `application_enter:claude-code:${roundTo5s(ts)}`,
+				};
+			}
+
+			if (parsed.type === 'assistant') {
+				yield* this.extractToolUseEvents(parsed, ts, repoRoot);
+			}
+		}
+
+		if (lastTimestamp && sessionStartEmitted) {
+			yield {
+				timestamp: lastTimestamp,
+				event: appLeaveEvent(OS_SERVER_APP, 'Claude Code session ended'),
+				source: 'claude',
+				dedupKey: `application_leave:claude-code:${roundTo5s(lastTimestamp)}`,
+			};
+		}
+	}
+
+	private *extractToolUseEvents(
+		parsed: Record<string, unknown>,
+		ts: Date,
+		repoRoot: string | undefined,
+	): Iterable<SourceEvent> {
+		const content = parsed.content;
+		if (!Array.isArray(content)) return;
+
+		for (const block of content) {
+			if (
+				typeof block !== 'object' ||
+				block === null ||
+				(block as Record<string, unknown>).type !== 'tool_use'
+			) {
+				continue;
+			}
+
+			const toolUse = block as { name?: string; input?: Record<string, unknown> };
+			const toolName = toolUse.name;
+			const input = toolUse.input;
+
+			if (!toolName || !input) continue;
+
+			if (toolName === 'Read' || toolName === 'Edit' || toolName === 'Write') {
+				const filePath =
+					(input.file_path as string | undefined) ?? (input.path as string | undefined);
+				if (filePath) {
+					yield {
+						timestamp: ts,
+						event: fileOpenEvent(OS_SERVER_APP, filePath, undefined, repoRoot),
+						source: 'claude',
+						dedupKey: `file_open:${filePath}:${roundTo5s(ts)}`,
+					};
+				}
+			}
+
+			if (toolName === 'Bash') {
+				const cmd = input.command as string | undefined;
+				if (cmd) {
+					yield {
+						timestamp: ts,
+						event: checkInEvent(OS_SERVER_APP, `Terminal: ${cmd.slice(0, 100)}`),
+						source: 'claude',
+						dedupKey: `check_in:bash:${roundTo5s(ts)}`,
+					};
+				}
+			}
+		}
+	}
+
+	private extractTimestamp(parsed: Record<string, unknown>): Date | undefined {
+		const raw = parsed.timestamp as string | undefined;
+		if (!raw) return undefined;
+		const d = new Date(raw);
+		return Number.isNaN(d.getTime()) ? undefined : d;
+	}
+
+	private inferRepoRoot(sessionPath: string): string | undefined {
+		const parts = sessionPath.split(sep);
+		const projectsIdx = parts.indexOf('projects');
+		if (projectsIdx < 0) return undefined;
+		const encoded = parts[projectsIdx + 1];
+		if (!encoded) return undefined;
+		return decodeProjectDir(encoded);
+	}
+}

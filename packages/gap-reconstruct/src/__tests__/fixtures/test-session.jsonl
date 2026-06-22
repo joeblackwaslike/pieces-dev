@@ -1,0 +1,6 @@
+{"type":"system","timestamp":"2026-05-27T10:00:00Z"}
+{"type":"human","timestamp":"2026-05-27T10:01:00Z","content":"Fix the login bug"}
+{"type":"assistant","timestamp":"2026-05-27T10:01:30Z","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/Users/joe/project/src/auth.ts"}}]}
+{"type":"assistant","timestamp":"2026-05-27T10:02:00Z","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/Users/joe/project/src/auth.ts","old_string":"bad","new_string":"good"}}]}
+{"type":"assistant","timestamp":"2026-05-27T10:03:00Z","content":[{"type":"tool_use","name":"Bash","input":{"command":"cd /Users/joe/project && npm test"}}]}
+{"type":"human","timestamp":"2026-05-27T10:05:00Z","content":"Looks good, thanks"}

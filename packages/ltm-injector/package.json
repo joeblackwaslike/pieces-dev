@@ -1,0 +1,119 @@
+{
+	"name": "pieces-ltm-injector",
+	"displayName": "Pieces LTM Injector",
+	"description": "Injects IDE workstream events into PiecesOS Long-Term Memory",
+	"version": "0.1.0",
+	"publisher": "joeblack",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/joeblackwaslike/pieces-dev"
+	},
+	"engines": {
+		"vscode": "^1.100.0"
+	},
+	"categories": [
+		"Other"
+	],
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"main": "./dist/extension.js",
+	"contributes": {
+		"configuration": {
+			"title": "Pieces LTM Injector",
+			"properties": {
+				"pieces-ltm-injector.enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "Enable/disable workstream event injection"
+				},
+				"pieces-ltm-injector.portOverride": {
+					"type": [
+						"number",
+						"null"
+					],
+					"default": null,
+					"description": "Override PiecesOS port (skip auto-discovery)"
+				},
+				"pieces-ltm-injector.heartbeatInterval": {
+					"type": "number",
+					"default": 30000,
+					"description": "Port re-probe interval in milliseconds"
+				},
+				"pieces-ltm-injector.checkInInterval": {
+					"type": "number",
+					"default": 60000,
+					"description": "Check-in heartbeat interval in milliseconds"
+				},
+				"pieces-ltm-injector.queueSize": {
+					"type": "number",
+					"default": 500,
+					"description": "Max queued events when PiecesOS is unreachable"
+				},
+				"pieces-ltm-injector.debugLogging": {
+					"type": "boolean",
+					"default": false,
+					"description": "Log every event to the output channel"
+				},
+				"pieces-ltm-injector.enableClaudeCodeIntegration": {
+					"type": "boolean",
+					"default": true,
+					"description": "Watch and parse Claude Code sessions"
+				},
+				"pieces-ltm-injector.enableGitEvents": {
+					"type": "boolean",
+					"default": true,
+					"description": "Emit events for git branch switches and commits"
+				},
+				"pieces-ltm-injector.enableTerminalEvents": {
+					"type": "boolean",
+					"default": true,
+					"description": "Emit events when terminals are opened or closed (terminal contents are never captured)"
+				},
+				"pieces-ltm-injector.enableClipboardCapture": {
+					"type": "boolean",
+					"default": true,
+					"description": "Capture editor copies (overrides Cmd/Ctrl+C to record copied text in LTM)"
+				}
+			}
+		},
+		"commands": [
+			{
+				"command": "pieces-ltm-injector.showOutput",
+				"title": "Show Output",
+				"category": "Pieces LTM"
+			},
+			{
+				"command": "pieces-ltm-injector.clipboardCopy",
+				"title": "Copy (capture to LTM)",
+				"category": "Pieces LTM"
+			}
+		],
+		"keybindings": [
+			{
+				"command": "pieces-ltm-injector.clipboardCopy",
+				"key": "ctrl+c",
+				"mac": "cmd+c",
+				"when": "editorTextFocus && config.pieces-ltm-injector.enableClipboardCapture"
+			}
+		]
+	},
+	"scripts": {
+		"build": "node esbuild.mjs",
+		"watch": "node esbuild.mjs --watch",
+		"typecheck": "tsc",
+		"test": "vitest run",
+		"package": "vsce package --no-dependencies"
+	},
+	"dependencies": {
+		"@pieces-dev/core": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/vscode": "^1.100.0",
+		"esbuild": "^0.25.0",
+		"typescript": "^5.8.0",
+		"vitest": "^3.2.0",
+		"@vscode/vsce": "^3.0.0"
+	}
+}

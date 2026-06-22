@@ -18,6 +18,8 @@ export type PipelineOptions = {
 	port?: number;
 };
 
+const MAX_CONCURRENCY = 32;
+
 const SOURCE_PRIORITY: Record<string, number> = {
 	claude: 0,
 	screentime: 1,
@@ -124,9 +126,13 @@ async function injectEvents(
 
 	// Guard against concurrency <= 0, which would spawn zero workers and
 	// silently inject nothing while the caller assumes success.
-	const workerCount = Number.isFinite(concurrency) ? Math.max(1, Math.floor(concurrency)) : 1;
+	const requested = Number.isFinite(concurrency) ? Math.max(1, Math.floor(concurrency)) : 1;
+	// Cap workers: never more than there are events, and never above a sane
+	// ceiling so a huge --concurrency can't allocate a giant pool or flood
+	// PiecesOS.
+	const workerCount = Math.min(requested, MAX_CONCURRENCY, Math.max(1, events.length));
 	if (workerCount !== concurrency) {
-		console.warn(`Invalid concurrency ${concurrency}; using ${workerCount}`);
+		console.warn(`Adjusted concurrency ${concurrency} → ${workerCount}`);
 	}
 
 	async function worker(): Promise<void> {
@@ -178,9 +184,13 @@ export async function runPipeline(options: PipelineOptions): Promise<void> {
 	const events = dedup(rawEvents);
 
 	if (options.limit !== undefined) {
+		// Fail fast: this is a write pipeline, so an invalid --limit must not
+		// silently fall through to injecting everything.
 		if (!Number.isInteger(options.limit) || options.limit < 0) {
-			console.warn(`Invalid --limit ${options.limit}; ignoring`);
-		} else if (events.length > options.limit) {
+			console.error(`Error: --limit must be a non-negative integer (got ${options.limit})`);
+			process.exit(1);
+		}
+		if (events.length > options.limit) {
 			events.length = options.limit;
 			console.log(`\nLimited to ${options.limit} events`);
 		}

@@ -97,13 +97,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				client = new PiecesClient(port);
 				const healthy = await client.checkHealth();
 				if (healthy) {
-					isConnected = true;
 					output.appendLine(`Connected to PiecesOS on port ${port}`);
-					updateStatus();
 
+					// Drain queued events BEFORE flipping isConnected, so events emitted
+					// mid-drain enqueue (preserving FIFO order) and are picked up by this
+					// same loop instead of racing ahead of older events. A failed replay
+					// (postEvent returns null) throws to stop the drain and keep the event
+					// at the head of the queue for the next attempt — never silently dropped.
 					await queue.drain(async (event) => {
-						await client!.postEvent(event as Record<string, unknown>);
+						const id = await client!.postEvent(event as Record<string, unknown>);
+						if (id === null) throw new Error('replay post failed');
 					});
+
+					isConnected = true;
+					updateStatus();
 					return;
 				}
 			}
@@ -120,17 +127,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 	await connect();
 
-	heartbeatTimer = setInterval(async () => {
-		if (!isConnected) {
-			await connect();
-		} else if (client) {
-			const healthy = await client.checkHealth();
-			if (!healthy) {
-				isConnected = false;
-				output.appendLine('PiecesOS connection lost');
-				updateStatus();
+	heartbeatTimer = setInterval(() => {
+		// setInterval ignores the returned promise; wrap so a rejection can't
+		// surface as an unhandled rejection.
+		void (async () => {
+			try {
+				if (!isConnected) {
+					await connect();
+				} else if (client) {
+					const healthy = await client.checkHealth();
+					if (!healthy) {
+						isConnected = false;
+						output.appendLine('PiecesOS connection lost');
+						updateStatus();
+					}
+				}
+			} catch (err) {
+				output.appendLine(`heartbeat error: ${err}`);
 			}
-		}
+		})();
 	}, heartbeatMs);
 
 	context.subscriptions.push(

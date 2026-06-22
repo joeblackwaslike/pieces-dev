@@ -8,6 +8,10 @@ import {
 import * as vscode from 'vscode';
 import type { EmitFn } from '../emit.js';
 
+// Mirror file-handler: ignore non-file editor tabs (output panels, diff/git
+// views, debug consoles) so they don't generate spurious tab_switch events.
+const SKIP_SCHEMES = new Set(['untitled', 'output', 'vscode', 'git', 'debug']);
+
 export function registerTabHandler(emit: EmitFn, checkInIntervalMs: number): vscode.Disposable[] {
 	let checkInTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -28,6 +32,7 @@ export function registerTabHandler(emit: EmitFn, checkInIntervalMs: number): vsc
 	const onTabSwitch = vscode.window.onDidChangeActiveTextEditor((editor) => {
 		if (!editor) return;
 		const doc = editor.document;
+		if (SKIP_SCHEMES.has(doc.uri.scheme)) return;
 		const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
 		emit(
 			tabSwitchEvent(VSCODE_APP, doc.uri.fsPath, doc.languageId, folder?.uri.fsPath),

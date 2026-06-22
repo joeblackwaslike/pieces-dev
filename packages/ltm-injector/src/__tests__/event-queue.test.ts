@@ -1,8 +1,9 @@
+import type { WorkstreamEventInput } from '@pieces-dev/core';
 import { describe, expect, it } from 'vitest';
 import { EventQueue } from '../event-queue.js';
 
-const makeEvent = () => ({
-	application: { id: '1', name: 'VS_CODE', version: '1', platform: 'MACOS' as const },
+const makeEvent = (): WorkstreamEventInput => ({
+	application: { id: '1', name: 'VS_CODE', version: '1', platform: 'MACOS' },
 	trigger: { check_in: true },
 });
 

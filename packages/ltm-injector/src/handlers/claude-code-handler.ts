@@ -55,9 +55,15 @@ export function registerClaudeCodeHandler(emit: EmitFn, log: LogFn): vscode.Disp
 					if (newContent.length <= prevSize) return;
 
 					const newPart = newContent.slice(prevSize);
-					fileSizes.set(filePath, newContent.length);
+					// Only consume up to the last complete line. A trailing partial line
+					// (no newline yet) must stay unconsumed so the rest can append to it
+					// on the next poll — otherwise advancing to EOF would split and lose
+					// that record.
+					const lastNewline = newPart.lastIndexOf('\n');
+					if (lastNewline === -1) return;
+					fileSizes.set(filePath, prevSize + lastNewline + 1);
 
-					for (const line of newPart.split('\n').filter(Boolean)) {
+					for (const line of newPart.slice(0, lastNewline).split('\n').filter(Boolean)) {
 						processLine(line, filePath);
 					}
 				} catch (err) {
@@ -126,7 +132,9 @@ export function registerClaudeCodeHandler(emit: EmitFn, log: LogFn): vscode.Disp
 	}
 
 	function inferProject(sessionPath: string): string {
-		const parts = sessionPath.split('/');
+		// Split on both separators so the 'projects' segment is found on Windows
+		// (backslash paths) too. The result is a best-effort label only.
+		const parts = sessionPath.split(/[/\\]/);
 		const projIdx = parts.indexOf('projects');
 		if (projIdx >= 0 && parts[projIdx + 1]) {
 			return parts[projIdx + 1]!.replace(/-/g, '/');

@@ -1,5 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ScreenTimeSource } from '../sources/screen-time.js';
+
+// ScreenTimeSource short-circuits off macOS (knowledgeC.db is macOS-only), so
+// pin the platform to darwin for deterministic results on any CI runner.
+const originalPlatform = process.platform;
+beforeAll(() => Object.defineProperty(process, 'platform', { value: 'darwin' }));
+afterAll(() => Object.defineProperty(process, 'platform', { value: originalPlatform }));
 
 vi.mock('better-sqlite3', () => {
 	return {

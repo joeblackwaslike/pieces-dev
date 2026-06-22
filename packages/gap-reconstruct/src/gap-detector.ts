@@ -73,9 +73,12 @@ export async function detectGaps(since: Date, until: Date, minGapMs: number): Pr
 	}
 
 	const rawEvents = await client.getEvents();
-	const events = (rawEvents as Array<{ created?: { value?: string } }>)
+	const events = rawEvents
 		.map((e) => {
-			const ts = e.created?.value;
+			// getEvents() returns unknown[]; a null/primitive element must not
+			// throw when we read `created`.
+			if (typeof e !== 'object' || e === null) return null;
+			const ts = (e as { created?: { value?: string } }).created?.value;
 			return ts ? { timestamp: new Date(ts) } : null;
 		})
 		.filter((e): e is { timestamp: Date } => {

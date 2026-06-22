@@ -16,7 +16,7 @@ program
 	.option('--min-gap <minutes>', 'Minimum gap duration to report (minutes)', Number.parseInt, 60)
 	.option('--since <iso>', 'How far back to scan (ISO 8601 or relative like "30d")')
 	.action(async (opts) => {
-		const minGapMs = (opts.minGap as number) * 60 * 1000;
+		const minGapMs = minGapMsFrom(opts.minGap as number);
 		const since = opts.since
 			? parseSince(opts.since as string)
 			: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -79,7 +79,7 @@ program
 
 		if (opts.allGaps) {
 			const since = parseSince(opts.since as string);
-			const minGapMs = (opts.minGap as number) * 60 * 1000;
+			const minGapMs = minGapMsFrom(opts.minGap as number);
 			const gaps = await detectGaps(since, new Date(), minGapMs);
 
 			if (gaps.length === 0) {
@@ -111,8 +111,21 @@ program
 			process.exit(1);
 		}
 
+		if (from >= to) {
+			console.error('Error: --from must be earlier than --to');
+			process.exit(1);
+		}
+
 		await runPipeline({ ...baseOpts, from, to });
 	});
+
+function minGapMsFrom(minutes: number): number {
+	if (!Number.isFinite(minutes) || minutes <= 0) {
+		console.error('Error: --min-gap must be a positive number of minutes');
+		process.exit(1);
+	}
+	return minutes * 60 * 1000;
+}
 
 function parseSince(value: string): Date {
 	const match = value.match(/^(\d+)d$/);

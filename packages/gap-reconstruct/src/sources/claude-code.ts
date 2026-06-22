@@ -55,7 +55,12 @@ export class ClaudeCodeSource implements Source {
 		const jsonlFiles = await this.findJsonlFiles();
 
 		for (const filePath of jsonlFiles) {
-			yield* this.parseSession(filePath, from, to);
+			try {
+				yield* this.parseSession(filePath, from, to);
+			} catch (err) {
+				// One unreadable/corrupt session must not abort ingestion of the rest.
+				console.warn(`[gap-reconstruct] failed to parse session ${filePath}:`, err);
+			}
 		}
 	}
 

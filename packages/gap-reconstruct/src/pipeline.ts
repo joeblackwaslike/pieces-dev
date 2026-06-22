@@ -124,7 +124,7 @@ async function injectEvents(
 
 	// Guard against concurrency <= 0, which would spawn zero workers and
 	// silently inject nothing while the caller assumes success.
-	const workerCount = Math.max(1, Math.floor(concurrency));
+	const workerCount = Number.isFinite(concurrency) ? Math.max(1, Math.floor(concurrency)) : 1;
 	if (workerCount !== concurrency) {
 		console.warn(`Invalid concurrency ${concurrency}; using ${workerCount}`);
 	}
@@ -177,9 +177,13 @@ export async function runPipeline(options: PipelineOptions): Promise<void> {
 	const rawEvents = await collectAll(sources, options.from, options.to);
 	const events = dedup(rawEvents);
 
-	if (options.limit && events.length > options.limit) {
-		events.length = options.limit;
-		console.log(`\nLimited to ${options.limit} events`);
+	if (options.limit !== undefined) {
+		if (!Number.isInteger(options.limit) || options.limit < 0) {
+			console.warn(`Invalid --limit ${options.limit}; ignoring`);
+		} else if (events.length > options.limit) {
+			events.length = options.limit;
+			console.log(`\nLimited to ${options.limit} events`);
+		}
 	}
 
 	if (options.dryRun) {

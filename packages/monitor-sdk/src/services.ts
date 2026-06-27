@@ -151,6 +151,17 @@ export interface ProcessApi {
 	restartPieces(mode?: RestartMode): Promise<void>;
 }
 
+/**
+ * `pgrep -f` matcher for the headless Pieces OS service, anchored on the app
+ * bundle's executable path. `pgrep -f` matches the whole command line, so a bare
+ * `"Pieces OS"` would also match an editor with a "Pieces OS" file open, a `tail`
+ * of its logs, or a stray `grep` — any of which the watchdog could then SIGKILL.
+ * Anchoring on the bundle path matches only a process actually launched from
+ * inside `Pieces OS.app/Contents/MacOS/` (the real service), regardless of where
+ * the app is installed.
+ */
+export const PIECES_PROCESS_MATCHER = 'Pieces OS.app/Contents/MacOS';
+
 /** Contribution surface: native menu-bar sections (rendered from the menu model). */
 export interface MenuApi {
 	contribute(provider: () => MenuSection): void;

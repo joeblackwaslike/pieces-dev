@@ -1,5 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import type { KillSignal, ProcessApi, RestartMode } from '@pieces-dev/monitor-sdk';
+import {
+	type KillSignal,
+	PIECES_PROCESS_MATCHER,
+	type ProcessApi,
+	type RestartMode,
+} from '@pieces-dev/monitor-sdk';
 
 const PIECES_APP = 'Pieces OS';
 const PIECES_DESKTOP_APP = 'Pieces';
@@ -36,15 +41,15 @@ export class ProcessControl {
 				.trim()
 				.split('\n')
 				.map((line) => Number(line.trim()))
-				// Exclude our own pid: `pgrep -f "Pieces OS"` matches the full command
-				// line, so a daemon/CLI launched from a path containing "Pieces OS"
-				// would otherwise match (and potentially signal) itself.
+				// Defense-in-depth: even with the bundle-path-anchored matcher, exclude
+				// our own pid in case this daemon/CLI is itself launched from inside the
+				// Pieces OS.app bundle and would otherwise match (and signal) itself.
 				.filter((n) => Number.isInteger(n) && n > 0 && n !== process.pid)
 		);
 	}
 
 	isPiecesRunning(): boolean {
-		return this.listPids(PIECES_APP).length > 0;
+		return this.listPids(PIECES_PROCESS_MATCHER).length > 0;
 	}
 
 	async launchPieces(): Promise<void> {
@@ -54,7 +59,7 @@ export class ProcessControl {
 	}
 
 	async stopPieces(): Promise<void> {
-		for (const pid of this.listPids(PIECES_APP)) {
+		for (const pid of this.listPids(PIECES_PROCESS_MATCHER)) {
 			this.run('kill', [String(pid)]);
 		}
 	}
@@ -67,12 +72,12 @@ export class ProcessControl {
 	 */
 	async killPieces(signal: KillSignal, waitMs = 10_000): Promise<number[]> {
 		const flag = signal === 'kill' ? '-KILL' : '-TERM';
-		for (const pid of this.listPids(PIECES_APP)) {
+		for (const pid of this.listPids(PIECES_PROCESS_MATCHER)) {
 			this.run('kill', [flag, String(pid)]);
 		}
 		const start = this.now();
 		while (true) {
-			const remaining = this.listPids(PIECES_APP);
+			const remaining = this.listPids(PIECES_PROCESS_MATCHER);
 			if (remaining.length === 0) return [];
 			if (this.now() - start >= waitMs) return remaining;
 			await this.sleep(KILL_POLL_MS);

@@ -40,6 +40,13 @@ describe('Process control', () => {
 		expect(new ProcessControl(run).listPids('x')).toEqual([]);
 	});
 
+	test('internal kill paths pgrep on the bundle-path-anchored matcher, not bare "Pieces OS"', () => {
+		const { run, calls } = fake((cmd) => (cmd === 'pgrep' ? { stdout: '', code: 1 } : undefined));
+		new ProcessControl(run).isPiecesRunning();
+		expect(calls).toContainEqual(['pgrep', '-f', 'Pieces OS.app/Contents/MacOS']);
+		expect(calls).not.toContainEqual(['pgrep', '-f', 'Pieces OS']);
+	});
+
 	test('launchPieces is guarded — no `open` when Pieces is already running', async () => {
 		const { run, calls } = fake((cmd) =>
 			cmd === 'pgrep' ? { stdout: '1\n', code: 0 } : undefined,

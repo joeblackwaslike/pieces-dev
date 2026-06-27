@@ -1,7 +1,6 @@
+import { PIECES_PROCESS_MATCHER } from '@pieces-dev/monitor-sdk';
 import type { RearmHandle, WatchdogDeps } from './deps.js';
 
-/** Process-name matcher for the headless Pieces OS service. */
-const PIECES_MATCHER = 'Pieces OS';
 /** How often `waitForStartup` re-polls health. */
 const STARTUP_POLL_MS = 1_000;
 
@@ -76,7 +75,7 @@ export class WatchdogEngine {
 
 		if (this.escalating || this.paused || this.gaveUp) return;
 
-		const pids = this.deps.process.listPids(PIECES_MATCHER);
+		const pids = this.deps.process.listPids(PIECES_PROCESS_MATCHER);
 		const inGrace = this.deps.now() - this.startupTime < s.startupGraceSec * 1000;
 
 		// Duplicate instance — the DB-wipe class of failure.
@@ -385,7 +384,7 @@ export class WatchdogEngine {
 
 	/** Kill duplicate instances and leave exactly one running. Returns the count found. */
 	async killDuplicates(): Promise<number> {
-		const pids = this.deps.process.listPids(PIECES_MATCHER);
+		const pids = this.deps.process.listPids(PIECES_PROCESS_MATCHER);
 		if (pids.length > 1) {
 			this.deps.incidents.record({
 				kind: 'duplicate-instance',

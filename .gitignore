@@ -5,3 +5,10 @@ out/
 .vscode-test/
 *.tsbuildinfo
 .DS_Store
+docs/_*.md
+
+# Local agent/tool state (machine-specific, not shared)
+.clawhip/
+.serena/cache/
+.serena/project.local.yml
+.serena/memories/

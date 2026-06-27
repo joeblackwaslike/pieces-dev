@@ -1,0 +1,33 @@
+{
+	"name": "@pieces-dev/monitor-core",
+	"version": "0.1.0",
+	"type": "module",
+	"exports": {
+		".": {
+			"import": "./dist/index.js",
+			"types": "./dist/index.d.ts"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"start": "node dist/daemon.js"
+	},
+	"dependencies": {
+		"@fastify/websocket": "^11.0.0",
+		"@pieces-dev/core": "workspace:*",
+		"@pieces-dev/data-integrity": "workspace:*",
+		"@pieces-dev/monitor-sdk": "workspace:*",
+		"@pieces-dev/watchdog": "workspace:*",
+		"fastify": "^5.2.0"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"typescript": "^5.8.0",
+		"vitest": "^3.2.0"
+	}
+}

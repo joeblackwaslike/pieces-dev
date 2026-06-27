@@ -1,0 +1,25 @@
+{
+	"name": "@pieces-dev/monitor-cli",
+	"version": "0.1.0",
+	"type": "module",
+	"bin": {
+		"pmon": "./dist/cli.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"@pieces-dev/monitor-sdk": "workspace:*",
+		"commander": "^12.1.0"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"typescript": "^5.8.0",
+		"vitest": "^3.2.0"
+	}
+}

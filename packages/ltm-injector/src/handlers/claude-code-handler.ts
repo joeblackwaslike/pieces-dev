@@ -20,7 +20,7 @@ export function registerClaudeCodeHandler(emit: EmitFn, log: LogFn): vscode.Disp
 
 	try {
 		watcher = watch(CLAUDE_PROJECTS, { recursive: true }, (_eventType, filename) => {
-			if (!filename || !filename.endsWith('.jsonl')) return;
+			if (!filename?.endsWith('.jsonl')) return;
 			if (filename.includes('subagent')) return;
 
 			const fullPath = join(CLAUDE_PROJECTS, filename);
@@ -137,7 +137,7 @@ export function registerClaudeCodeHandler(emit: EmitFn, log: LogFn): vscode.Disp
 		const parts = sessionPath.split(/[/\\]/);
 		const projIdx = parts.indexOf('projects');
 		if (projIdx >= 0 && parts[projIdx + 1]) {
-			return parts[projIdx + 1]!.replace(/-/g, '/');
+			return parts[projIdx + 1]?.replace(/-/g, '/');
 		}
 		return 'unknown';
 	}

@@ -60,8 +60,12 @@ PROMPT="You are a background memory extractor running after a Claude Code sessio
   "Extract significant items from the session transcript and save them to Pieces." \
   > /dev/null 2>&1
 
-# Update cooldown timestamp on success
-mkdir -p "$(dirname "$COOLDOWN_FILE")"
-date +%s > "$COOLDOWN_FILE"
+CLAUDE_EXIT=$?
+
+# Update cooldown timestamp only on successful extraction
+if [[ "$CLAUDE_EXIT" -eq 0 ]]; then
+  mkdir -p "$(dirname "$COOLDOWN_FILE")"
+  date +%s > "$COOLDOWN_FILE"
+fi
 
 exit 0

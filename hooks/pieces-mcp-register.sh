@@ -19,18 +19,20 @@ PORT=$(tr -d '[:space:]' < "$PORT_FILE")
 
 URL="http://localhost:$PORT/model_context_protocol/2025-03-26/mcp"
 
+# --- Guard: port unchanged ---
+if [[ -f "$SETTINGS" ]]; then
+  CURRENT_URL=$(jq -r '.mcpServers.pieces.url // ""' "$SETTINGS" 2>/dev/null)
+  [[ "$CURRENT_URL" == "$URL" ]] && exit 0
+fi
+
 # --- Guard: cooldown (skip if last run < 5 min ago) ---
+# Placed AFTER port-change check so a Pieces OS restart on a new port
+# bypasses cooldown and immediately registers the new endpoint.
 if [[ -f "$COOLDOWN_FILE" ]]; then
   LAST_RUN=$(cat "$COOLDOWN_FILE" 2>/dev/null || echo 0)
   NOW=$(date +%s)
   ELAPSED=$(( NOW - LAST_RUN ))
   [[ "$ELAPSED" -lt 300 ]] && exit 0
-fi
-
-# --- Guard: port unchanged ---
-if [[ -f "$SETTINGS" ]]; then
-  CURRENT_URL=$(jq -r '.mcpServers.pieces.url // ""' "$SETTINGS" 2>/dev/null)
-  [[ "$CURRENT_URL" == "$URL" ]] && exit 0
 fi
 
 # Initialize settings.json if it does not exist yet, so jq has valid input.
